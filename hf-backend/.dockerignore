@@ -1,0 +1,16 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.gitignore
+.env
+.venv
+venv
+env
+node_modules
+extension-react/node_modules
+extension-react/dist
+backend/outputs/*
+!backend/outputs/.gitkeep
+notes
