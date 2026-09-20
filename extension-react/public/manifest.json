@@ -13,6 +13,8 @@
   "host_permissions": [
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*",
+    "https://*.onrender.com/*",
+    "https://notecraft-backend-4ktk.onrender.com/*",
     "https://*.hf.space/*",
     "https://*.modal.run/*",
     "https://meet.google.com/*",
