@@ -58,6 +58,7 @@ const App = ({ mode = 'popup' }) => {
   const [transcript,     setTranscript]     = useState('');
   const [downloadUrl,    setDownloadUrl]    = useState('');
   const [isVisible,      setIsVisible]      = useState(true);
+  const [selectedMode,   setSelectedMode]   = useState('mom');     // mom | class_notes
 
   /* ── refs (immune to render cycles) ── */
   const posRef       = useRef(DEFAULT_POS); // always reflects latest position
@@ -86,7 +87,7 @@ const App = ({ mode = 'popup' }) => {
     if (typeof chrome === 'undefined' || !chrome?.storage?.local) return;
 
     chrome.storage.local.get(
-      ['currentState', 'elapsedSeconds', 'nc_minimized', 'nc_pos', 'currentSession', 'transcript', 'downloadUrl', 'nc_visible'],
+      ['currentState', 'elapsedSeconds', 'nc_minimized', 'nc_pos', 'currentSession', 'transcript', 'downloadUrl', 'nc_visible', 'selectedMode'],
       (data) => {
         setScreen(mapStateToScreen(data.currentState));
         const sec = data.elapsedSeconds || 0;
@@ -97,6 +98,7 @@ const App = ({ mode = 'popup' }) => {
         setTranscript(data.transcript || '');
         setDownloadUrl(data.downloadUrl || '');
         setIsVisible(data.nc_visible !== false);
+        setSelectedMode(data.selectedMode || 'mom');
         // Always validate the stored position
         if (data.nc_pos) {
           const p = safePos(data.nc_pos);
@@ -135,6 +137,9 @@ const App = ({ mode = 'popup' }) => {
       if (changes.downloadUrl) {
         setDownloadUrl(changes.downloadUrl.newValue || '');
       }
+      if (changes.selectedMode) {
+        setSelectedMode(changes.selectedMode.newValue || 'mom');
+      }
       if (changes.nc_pos) {
         const p = safePos(changes.nc_pos.newValue);
         posRef.current = p;
@@ -145,6 +150,15 @@ const App = ({ mode = 'popup' }) => {
     chrome.storage.onChanged.addListener(onStorageChange);
     return () => chrome.storage.onChanged.removeListener(onStorageChange);
   }, []);
+
+  /* ── mode change handler ── */
+  const handleModeChange = (newMode) => {
+    if (screen !== 'start' && screen !== 'idle') return;
+    setSelectedMode(newMode);
+    if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
+      chrome.storage.local.set({ selectedMode: newMode });
+    }
+  };
 
   /* ── timer ── */
   useEffect(() => {
@@ -208,6 +222,7 @@ const App = ({ mode = 'popup' }) => {
     setDownloadUrl("");
     setSessionId(null);
     setIsMinimized(false);
+    setSelectedMode("mom");
 
     // 2. Clear session-specific storage entries (preserving layout/position, nc_pos)
     if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
@@ -222,7 +237,8 @@ const App = ({ mode = 'popup' }) => {
         // Force state update to notify any other active contexts/listeners
         chrome.storage.local.set({
           currentState: 'idle',
-          nc_minimized: false
+          nc_minimized: false,
+          selectedMode: 'mom'
         });
       });
     }
@@ -389,7 +405,27 @@ const App = ({ mode = 'popup' }) => {
         <div className="nc-body">
           {(screen === 'start' || screen === 'idle' || !['recording', 'processing', 'complete', 'ready'].includes(screen)) && (
             <div className="nc-content">
-              <p className="nc-status">Ready to capture your meeting insights.</p>
+              <div className="nc-mode-selector">
+                <span className="nc-mode-label">Select Output Mode</span>
+                <div className="nc-mode-options">
+                  <button
+                    type="button"
+                    className={`nc-mode-card ${selectedMode === 'mom' ? 'active' : ''}`}
+                    onClick={() => handleModeChange('mom')}
+                  >
+                    <div className="nc-mode-title">MOM</div>
+                    <div className="nc-mode-desc">Meeting Minutes</div>
+                  </button>
+                  <button
+                    type="button"
+                    className={`nc-mode-card ${selectedMode === 'class_notes' ? 'active' : ''}`}
+                    onClick={() => handleModeChange('class_notes')}
+                  >
+                    <div className="nc-mode-title">CLASS / WEBINAR</div>
+                    <div className="nc-mode-desc">Detailed Notes</div>
+                  </button>
+                </div>
+              </div>
               <button onClick={handleStart} className="nc-btn nc-btn-primary">
                 <Play size={16} /> Start Recording
               </button>
@@ -421,7 +457,12 @@ const App = ({ mode = 'popup' }) => {
 
           {(screen === 'complete' || screen === 'ready') && (
             <div className="nc-content">
-              <p className="nc-title-text" style={{ color: '#10b981' }}>✓ Notes Ready!</p>
+              <p className="nc-title-text" style={{ color: '#10b981' }}>
+                ✓ {selectedMode === 'class_notes' ? 'Class / Webinar Notes Ready!' : 'Meeting Minutes Ready!'}
+              </p>
+              <div className="nc-type-badge">
+                Type: {selectedMode === 'class_notes' ? 'Class / Webinar Notes' : 'Meeting Minutes'}
+              </div>
               <button onClick={handleDownload} className="nc-btn nc-btn-success">
                 <Download size={16} /> Download DOCX
               </button>

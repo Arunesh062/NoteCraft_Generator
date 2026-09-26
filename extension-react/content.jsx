@@ -186,32 +186,41 @@ import { BACKEND_URL } from './config.js';
 
     chrome.storage.local.set({ currentState: 'processing' });
 
-    try {
-      chrome.runtime.sendMessage({
-        action: 'FINALIZE_SESSION',
-        data: { session_id: currentSession, participants, speaker_timeline: speakerTimeline }
-      }, (response) => {
-        if (chrome.runtime.lastError) {
-          console.error("❌ NoteCraft Finalize Error:", chrome.runtime.lastError.message);
-          alert(`NoteCraft Backend disconnected: ${chrome.runtime.lastError.message}`);
-          chrome.storage.local.set({ currentState: 'idle' });
-          return;
-        }
+    chrome.storage.local.get(['selectedMode'], (res) => {
+      const mode = res.selectedMode || 'mom';
 
-        if (response && response.ok) {
-          startPolling();
-        } else {
-          const errMsg = response?.error || `Status ${response?.status || 'unknown'}`;
-          console.error("❌ NoteCraft Finalize Error:", errMsg);
-          alert(`NoteCraft Backend disconnected. Cannot finalize notes (${errMsg}).`);
-          chrome.storage.local.set({ currentState: 'idle' });
-        }
-      });
-    } catch (err) {
-      console.error("❌ NoteCraft Finalize Exception:", err);
-      alert(`NoteCraft Backend disconnected. Cannot finalize notes (${err.message}).`);
-      chrome.storage.local.set({ currentState: 'idle' });
-    }
+      try {
+        chrome.runtime.sendMessage({
+          action: 'FINALIZE_SESSION',
+          data: {
+            session_id: currentSession,
+            mode: mode,
+            participants,
+            speaker_timeline: speakerTimeline
+          }
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.error("❌ NoteCraft Finalize Error:", chrome.runtime.lastError.message);
+            alert(`NoteCraft Backend disconnected: ${chrome.runtime.lastError.message}`);
+            chrome.storage.local.set({ currentState: 'idle' });
+            return;
+          }
+
+          if (response && response.ok) {
+            startPolling();
+          } else {
+            const errMsg = response?.error || `Status ${response?.status || 'unknown'}`;
+            console.error("❌ NoteCraft Finalize Error:", errMsg);
+            alert(`NoteCraft Backend disconnected. Cannot finalize notes (${errMsg}).`);
+            chrome.storage.local.set({ currentState: 'idle' });
+          }
+        });
+      } catch (err) {
+        console.error("❌ NoteCraft Finalize Exception:", err);
+        alert(`NoteCraft Backend disconnected. Cannot finalize notes (${err.message}).`);
+        chrome.storage.local.set({ currentState: 'idle' });
+      }
+    });
   }
 
   function startPolling() {

@@ -182,90 +182,82 @@ async def aggregate_block(chunk_summaries: list, block_index: int, session_id: s
     return await _call_llm(system, user, session_id=session_id)
 
 
-# ── JOB 3b: Generate Minutes of Meeting (MoM) ─────────────────
+# ── JOB 3b: Generate Notes (MoM or Class Notes) ───────────────
+async def generate_notes(
+    block_summaries:  list,
+    participants:     list,
+    meeting_date:     str,
+    duration_minutes: str = "Unknown",
+    mode:             str = "mom",
+    session_id:       str = None,
+    max_retries:      int = 3
+) -> dict:
+    """
+    Main entry point to generate notes based on the selected mode ('mom' or 'class_notes').
+    """
+    if mode == "class_notes":
+        return await generate_class_notes(
+            block_summaries=block_summaries,
+            participants=participants,
+            meeting_date=meeting_date,
+            duration_minutes=duration_minutes,
+            session_id=session_id,
+            max_retries=max_retries
+        )
+    else:
+        return await generate_mom(
+            block_summaries=block_summaries,
+            participants=participants,
+            meeting_date=meeting_date,
+            duration_minutes=duration_minutes,
+            session_id=session_id,
+            max_retries=max_retries
+        )
+
+
 async def generate_mom(
-    block_summaries: list,
-    participants:    list,
-    meeting_date:    str,
+    block_summaries:  list,
+    participants:     list,
+    meeting_date:     str,
     duration_minutes: str = "Unknown",
     session_id:       str = None,
     max_retries:      int = 3
 ) -> dict:
 
     system = (
-        "You are an expert Minute Taker, Documentation Specialist, and Educational Note Taker. "
-        "Analyze the provided meeting summaries and determine if the session is a standard business meeting (Minutes of Meeting) OR an educational/training session (Online Session). "
-        "Return ONLY valid JSON — no markdown code fences, no extra conversational text.\n\n"
-
-        "CRITICAL CLASSIFICATION RULES:\n"
-        "1. Automatically infer the domain and context of the meeting from the content. Classify it as either 'mom' or 'online_session'.\n"
-        "   -> Choose 'mom' ONLY for business meetings, corporate updates, project planning, and administrative discussions.\n"
-        "   -> Choose 'online_session' for ANY academic class, university lecture, tutorial, or educational training (e.g., Computer Science, Operating Systems, Math, Tech tutorials). If someone is teaching or explaining academic concepts, it is an 'online_session'.\n"
-        "2. The JSON MUST have a 'document_type' field set to exactly either 'mom' or 'online_session'.\n"
-        "3. Depending on the 'document_type', the rest of the JSON must follow the respective schema below.\n\n"
-
-        "SCHEMA FOR 'mom':\n"
+        "You are an expert Minute Taker and Documentation Specialist. "
+        "Analyze the provided meeting summaries and generate structured Minutes of Meeting (MOM). "
+        "Do NOT invent information that is not present in the transcript.\n\n"
+        "Return ONLY valid JSON matching this schema:\n"
         "{\n"
         '  "document_type": "mom",\n'
         '  "session_title": "Descriptive Meeting Title",\n'
-        '  "meeting_no": "2026-07",\n'
+        '  "meeting_no": "2026-07/01",\n'
         '  "date": "YYYY-MM-DD",\n'
         '  "time": "10:00 AM - 11:30 AM",\n'
         '  "venue_platform": "Google Meet",\n'
-        '  "members_present": ["Name (Role)", "Name 2 (Role)"],\n'
+        '  "members_present": ["Name 1", "Name 2"],\n'
         '  "points_discussed": [\n'
         '    {\n'
-        '      "category_name": "Category 1 Name",\n'
-        '      "points": ["Formal point 1", "Formal point 2"]\n'
+        '      "category_name": "Category Name",\n'
+        '      "points": ["Point 1", "Point 2"]\n'
         '    }\n'
         '  ],\n'
         '  "responsibility_matrix": [\n'
         '    {\n'
-        '      "category_name": "Category 1 Name",\n'
-        '      "responsibility": "Designated Person or Team",\n'
+        '      "category_name": "Category Name",\n'
+        '      "responsibility": "Designated Person/Team",\n'
         '      "target_date": "DD.MM.YYYY or Continuous"\n'
         '    }\n'
         '  ],\n'
         '  "information_items": [\n'
-        '    "Informational notice 1",\n'
-        '    "Informational notice 2"\n'
+        '    "Informational notice 1"\n'
         '  ],\n'
-        '  "copy_to": ["Recipient 1", "Recipient 2"],\n'
-        '  "copy_submitted_to": ["Higher Authority 1", "Higher Authority 2"],\n'
+        '  "copy_to": ["Recipient 1"],\n'
+        '  "copy_submitted_to": ["Management"],\n'
         '  "signatory_name": "Name of Secretary / Convener",\n'
         '  "signatory_designation": "Designation / Role",\n'
         '  "signature_date": "YYYY-MM-DD"\n'
-        "}\n\n"
-
-        "SCHEMA FOR 'online_session':\n"
-        "{\n"
-        '  "document_type": "online_session",\n'
-        '  "session_title": "Descriptive Session Title",\n'
-        '  "instructor": "Instructor Name (infer if possible)",\n'
-        '  "date": "YYYY-MM-DD",\n'
-        '  "duration_minutes": "Approximate duration if known, else Unknown",\n'
-        '  "platform": "Google Meet",\n'
-        '  "topics_covered": [\n'
-        '    {\n'
-        '      "topic_name": "Topic Name",\n'
-        '      "summary": "Brief summary of the topic",\n'
-        '      "key_points": ["Point 1", "Point 2"],\n'
-        '      "definitions": [\n'
-        '        {"term": "Term", "explanation": "Explanation"}\n'
-        '      ],\n'
-        '      "examples": ["Example 1", "Example 2"]\n'
-        '    }\n'
-        '  ],\n'
-        '  "doubts_and_clarifications": [\n'
-        '    {"question": "What is X?", "answer": "X is Y."}\n'
-        '  ],\n'
-        '  "assignments_and_follow_ups": [\n'
-        '    {"description": "Assignment description", "due_date": "YYYY-MM-DD or Unknown"}\n'
-        '  ],\n'
-        '  "resources_referenced": [\n'
-        '    "Resource 1", "Resource 2"\n'
-        '  ],\n'
-        '  "session_summary": "Overall summary of the entire session."\n'
         "}"
     )
 
@@ -290,8 +282,8 @@ async def generate_mom(
         parsed = _parse_json(response)
         if parsed:
             if session_id:
-                # Overwrite the last attempt to success
                 metrics_logger.session_metrics[session_id]["json_successes"] += 1
+            parsed["document_type"] = "mom"
             if not parsed.get("date"):
                 parsed["date"] = meeting_date
             if not parsed.get("venue_platform"):
@@ -304,13 +296,115 @@ async def generate_mom(
     return _fallback_notes(participants, meeting_date)
 
 
+async def generate_class_notes(
+    block_summaries:  list,
+    participants:     list,
+    meeting_date:     str,
+    duration_minutes: str = "Unknown",
+    session_id:       str = None,
+    max_retries:      int = 3
+) -> dict:
+
+    system = (
+        "You are an expert Educational Note Taker and Technical Documentation Specialist. "
+        "Analyze the provided transcript summaries from a class, lecture, training session, technical session, webinar, or workshop. "
+        "Your objective is to generate clear, structured study and reference notes. "
+        "Do NOT create meeting minutes or action items unless specific tasks/assignments were assigned by the instructor. "
+        "Preserve technical terminology and code snippets accurately when present in the transcript. "
+        "Do NOT invent code, definitions, or examples that were not present in the transcript.\n\n"
+        "Return ONLY valid JSON matching this schema:\n"
+        "{\n"
+        '  "document_type": "class_notes",\n'
+        '  "session_title": "Descriptive Title",\n'
+        '  "date": "YYYY-MM-DD",\n'
+        '  "speaker_instructor": "Instructor or Speaker Name",\n'
+        '  "session_type": "Class / Webinar / Lecture",\n'
+        '  "overview": "High-level overview of the session",\n'
+        '  "topics_covered": ["Topic 1", "Topic 2"],\n'
+        '  "detailed_notes": [\n'
+        '    {\n'
+        '      "topic_title": "Topic Name",\n'
+        '      "explanation": "Detailed explanation of concepts discussed",\n'
+        '      "key_points": ["Key point 1", "Key point 2"]\n'
+        '    }\n'
+        '  ],\n'
+        '  "important_concepts": [\n'
+        '    {\n'
+        '      "term_or_concept": "Term or Concept Name",\n'
+        '      "definition_or_explanation": "Definition or explanation given"\n'
+        '    }\n'
+        '  ],\n'
+        '  "examples_demonstrations": [\n'
+        '    "Example or demonstration provided by speaker"\n'
+        '  ],\n'
+        '  "code_technical_examples": [\n'
+        '    {\n'
+        '      "language_or_context": "Programming language or tech context (e.g. Python, Java, SQL)",\n'
+        '      "code_snippet": "Code snippet if present in transcript",\n'
+        '      "explanation": "Explanation of the code example"\n'
+        '    }\n'
+        '  ],\n'
+        '  "questions_and_answers": [\n'
+        '    {\n'
+        '      "question": "Question asked by attendee",\n'
+        '      "answer": "Answer provided by speaker"\n'
+        '    }\n'
+        '  ],\n'
+        '  "practical_tips": [\n'
+        '    "Practical tip or recommendation mentioned"\n'
+        '  ],\n'
+        '  "key_takeaways": [\n'
+        '    "Key takeaway 1", "Key takeaway 2"\n'
+        '  ],\n'
+        '  "final_summary": "Concise concluding summary of the session"\n'
+        "}"
+    )
+
+    summaries_text = "\n\n".join(
+        [f"Block {i+1}:\n{s}" for i, s in enumerate(block_summaries)]
+    )
+    user = (
+        f"Session date: {meeting_date}\n"
+        f"Scraped Attendees/Instructor: {', '.join(participants) if participants else 'Participants'}\n"
+        f"Session Duration: {duration_minutes} minutes\n\n"
+        f"Session summaries:\n{summaries_text}\n\n"
+        f"Generate the Class / Webinar Notes JSON now following the exact schema required."
+    )
+
+    for attempt in range(max_retries):
+        if session_id:
+            metrics_logger.log_json_attempt(session_id, success=False)
+
+        print(f"Generating Class Notes (Attempt {attempt + 1})...")
+        response = await _call_llm(system, user, max_tokens=4000, json_mode=True, session_id=session_id)
+
+        parsed = _parse_json(response)
+        if parsed:
+            if session_id:
+                metrics_logger.session_metrics[session_id]["json_successes"] += 1
+            parsed["document_type"] = "class_notes"
+            if not parsed.get("date"):
+                parsed["date"] = meeting_date
+            return parsed
+
+    print("Failed to parse Class Notes JSON — using fallback template")
+    return _fallback_class_notes(participants, meeting_date)
+
+
 # ── JOB 4: Refinement Pass ──────────────────────────────────────
+async def refine_notes(draft_json: dict, session_id: str = None, max_retries: int = 3) -> dict:
+    """
+    Refines either MOM or Class Notes draft JSON.
+    """
+    return await refine_mom(draft_json, session_id=session_id, max_retries=max_retries)
+
+
 async def refine_mom(draft_json: dict, max_retries: int = 3, session_id: str = None) -> dict:
     system = (
         "You are a professional Document Editor. "
-        "Refine and improve the given JSON Document (which is either Minutes of Meeting or Online Session Notes). "
-        "Fix grammar, improve professional tone, and ensure fields are strictly typed. "
-        "Do NOT change the schema structure. Return ONLY valid JSON."
+        "Refine and improve the given JSON Document (which is either Minutes of Meeting or Class/Webinar Notes). "
+        "Fix grammar, improve tone, and ensure fields are strictly typed. "
+        "Do NOT change the document_type or schema structure. Return ONLY valid JSON."
     )
     user = f"Refine this JSON:\n\n{json.dumps(draft_json, indent=2)}"
 
@@ -318,7 +412,7 @@ async def refine_mom(draft_json: dict, max_retries: int = 3, session_id: str = N
         if session_id:
             metrics_logger.log_json_attempt(session_id, success=False)
             
-        print(f"Refining MoM (Attempt {attempt + 1})...")
+        print(f"Refining Notes (Attempt {attempt + 1})...")
         response = await _call_llm(system, user, max_tokens=4000, json_mode=True, session_id=session_id)
         
         parsed = _parse_json(response)
@@ -327,7 +421,7 @@ async def refine_mom(draft_json: dict, max_retries: int = 3, session_id: str = N
                 metrics_logger.session_metrics[session_id]["json_successes"] += 1
             return parsed
 
-    print("Failed to refine MoM JSON — returning unrefined draft")
+    print("Failed to refine JSON — returning unrefined draft")
     return draft_json
 
 
@@ -363,4 +457,36 @@ def _fallback_notes(participants: list, date: str) -> dict:
         "signatory_name":      "Meeting Secretary",
         "signatory_designation": "Convener",
         "signature_date":      date,
+    }
+
+
+def _fallback_class_notes(participants: list, date: str) -> dict:
+    speaker = participants[0] if participants else "Instructor / Speaker"
+    return {
+        "document_type": "class_notes",
+        "session_title": "Class / Webinar Notes",
+        "date": date,
+        "speaker_instructor": speaker,
+        "session_type": "Class / Webinar",
+        "overview": "The class/webinar session was conducted. Please refer to recording for full transcript.",
+        "topics_covered": ["General Session Topics"],
+        "detailed_notes": [
+            {
+                "topic_title": "General Discussion",
+                "explanation": "Detailed explanation of session topics.",
+                "key_points": ["Session content review."]
+            }
+        ],
+        "important_concepts": [
+            {
+                "term_or_concept": "Key Concept",
+                "definition_or_explanation": "Core concepts covered during presentation."
+            }
+        ],
+        "examples_demonstrations": [],
+        "code_technical_examples": [],
+        "questions_and_answers": [],
+        "practical_tips": ["Review lecture material and practice exercises."],
+        "key_takeaways": ["Completed live session."],
+        "final_summary": "Session notes generated."
     }

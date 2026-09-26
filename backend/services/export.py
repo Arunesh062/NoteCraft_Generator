@@ -36,8 +36,8 @@ def export_documents(mom_json: dict, session_id: str) -> tuple:
     )
 
     doc_type = mom_json.get("document_type", "mom")
-    if doc_type == "online_session":
-        _generate_online_session_docx(mom_json, docx_path)
+    if doc_type == "class_notes" or doc_type == "online_session":
+        _generate_class_notes_docx(mom_json, docx_path)
     else:
         _generate_docx(mom_json, docx_path)
 
@@ -437,9 +437,10 @@ def _add_page_number(paragraph):
     run._r.append(fld_end2)
 
 # ─────────────────────────────────────────────
-# ONLINE SESSION DOCX GENERATION
 # ─────────────────────────────────────────────
-def _generate_online_session_docx(data: dict, path: str):
+# CLASS / WEBINAR NOTES DOCX GENERATION
+# ─────────────────────────────────────────────
+def _generate_class_notes_docx(data: dict, path: str):
     doc = Document()
 
     # PAGE SETTINGS
@@ -458,152 +459,296 @@ def _generate_online_session_docx(data: dict, path: str):
     # 1. MAIN TITLE
     title_para = doc.add_paragraph()
     title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    session_title = data.get("session_title") or "Session Notes"
-    run = title_para.add_run(f"{session_title} — Session Notes")
+    session_title = data.get("session_title") or data.get("title") or "Class / Webinar Notes"
+    run = title_para.add_run("CLASS / WEBINAR NOTES")
     run.bold = True
     run.font.size = Pt(16)
-    title_para.paragraph_format.space_after = Pt(14)
+    title_para.paragraph_format.space_after = Pt(12)
 
-    # 2. METADATA
+    # 2. METADATA TABLE
     meta_table = doc.add_table(rows=4, cols=2)
     meta_table.style = "Table Grid"
 
+    speaker = data.get("speaker_instructor") or data.get("instructor") or "Speaker / Instructor"
+    date_val = data.get("date") or datetime.now().strftime("%Y-%m-%d")
+    session_type = data.get("session_type") or "Class / Webinar"
+
     meta_rows = [
-        ("Instructor", data.get("instructor") or "Unknown"),
-        ("Date", data.get("date") or datetime.now().strftime("%Y-%m-%d")),
-        ("Duration", str(data.get("duration_minutes") or "Unknown")),
-        ("Platform", data.get("platform") or "Google Meet"),
+        ("Title", str(session_title)),
+        ("Date", str(date_val)),
+        ("Speaker / Instructor", str(speaker)),
+        ("Session Type", str(session_type)),
     ]
 
     for idx, (label, val) in enumerate(meta_rows):
         row_cells = meta_table.rows[idx].cells
-        row_cells[0].text = str(label)
-        row_cells[0].paragraphs[0].runs[0].bold = True
+        row_cells[0].text = label
+        p0 = row_cells[0].paragraphs[0]
+        r0 = p0.runs[0]
+        r0.bold = True
+        r0.font.size = Pt(10)
         _set_cell_background(row_cells[0], "F2F2F2")
-        row_cells[1].text = str(val)
+
+        row_cells[1].text = val
+        p1 = row_cells[1].paragraphs[0]
+        r1 = p1.runs[0]
+        r1.font.size = Pt(10)
 
     doc.add_paragraph().paragraph_format.space_after = Pt(10)
 
-    # 1. TOPICS COVERED
-    header_topics = doc.add_paragraph()
-    r_ht = header_topics.add_run("1. TOPICS COVERED")
-    r_ht.bold = True
-    r_ht.font.size = Pt(14)
-    header_topics.paragraph_format.space_after = Pt(6)
+    section_num = 1
 
-    topics = data.get("topics_covered") or []
-    for t_idx, topic in enumerate(topics, start=1):
-        p_topic = doc.add_paragraph()
-        p_topic.paragraph_format.space_before = Pt(14)
-        p_topic.paragraph_format.space_after = Pt(4)
-        r_tname = p_topic.add_run(f"1.{t_idx} {topic.get('topic_name') or 'Topic'}")
-        r_tname.bold = True
-        r_tname.font.size = Pt(12)
+    # 1. Overview
+    overview = data.get("overview")
+    if overview and str(overview).strip():
+        p_hdr = doc.add_paragraph()
+        r_hdr = p_hdr.add_run(f"{section_num}. Overview")
+        r_hdr.bold = True
+        r_hdr.font.size = Pt(13)
+        p_hdr.paragraph_format.space_before = Pt(10)
+        p_hdr.paragraph_format.space_after = Pt(4)
+
+        p_txt = doc.add_paragraph(str(overview).strip())
+        p_txt.paragraph_format.space_after = Pt(8)
+        section_num += 1
+
+    # 2. Topics Covered
+    topics_covered = data.get("topics_covered") or []
+    if isinstance(topics_covered, str):
+        topics_covered = [topics_covered]
+    if topics_covered:
+        p_hdr = doc.add_paragraph()
+        r_hdr = p_hdr.add_run(f"{section_num}. Topics Covered")
+        r_hdr.bold = True
+        r_hdr.font.size = Pt(13)
+        p_hdr.paragraph_format.space_before = Pt(10)
+        p_hdr.paragraph_format.space_after = Pt(4)
+
+        for topic in topics_covered:
+            if topic and str(topic).strip():
+                p_t = doc.add_paragraph(style="List Bullet")
+                r_t = p_t.add_run(str(topic).strip())
+                r_t.font.size = Pt(10)
+                p_t.paragraph_format.space_after = Pt(2)
         
-        summary = topic.get("summary")
-        if summary:
-            p_summ = doc.add_paragraph()
-            p_summ.add_run("Summary: ").bold = True
-            p_summ.add_run(str(summary))
-            p_summ.paragraph_format.space_after = Pt(6)
-        
-        key_points = topic.get("key_points") or []
-        if key_points:
-            p_kp = doc.add_paragraph()
-            p_kp.add_run("Key Points:").bold = True
-            p_kp.paragraph_format.space_after = Pt(2)
-            for kp in key_points:
-                p_sub = doc.add_paragraph(style="List Bullet")
-                p_sub.add_run(str(kp))
-                p_sub.paragraph_format.space_after = Pt(2)
-                
-        defs = topic.get("definitions") or []
-        if defs:
-            p_def = doc.add_paragraph()
-            p_def.add_run("Definitions:").bold = True
-            p_def.paragraph_format.space_before = Pt(6)
-            p_def.paragraph_format.space_after = Pt(2)
-            for d in defs:
-                p_sub = doc.add_paragraph(style="List Bullet")
-                term = d.get("term") or ""
-                explanation = d.get("explanation") or ""
-                r_term = p_sub.add_run(f"{term} — ")
-                r_term.bold = True
-                p_sub.add_run(str(explanation))
-                p_sub.paragraph_format.space_after = Pt(2)
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+        section_num += 1
 
-        examples = topic.get("examples") or []
-        if examples:
-            p_ex = doc.add_paragraph()
-            p_ex.add_run("Examples / Demonstrations:").bold = True
-            p_ex.paragraph_format.space_before = Pt(6)
-            p_ex.paragraph_format.space_after = Pt(2)
-            for ex in examples:
-                p_sub = doc.add_paragraph(style="List Bullet")
-                p_sub.add_run(str(ex))
-                p_sub.paragraph_format.space_after = Pt(2)
+    # 3. Detailed Notes
+    detailed_notes = data.get("detailed_notes") or []
+    if detailed_notes:
+        p_hdr = doc.add_paragraph()
+        r_hdr = p_hdr.add_run(f"{section_num}. Detailed Notes")
+        r_hdr.bold = True
+        r_hdr.font.size = Pt(13)
+        p_hdr.paragraph_format.space_before = Pt(10)
+        p_hdr.paragraph_format.space_after = Pt(4)
 
-    # 2. DOUBTS & CLARIFICATIONS
-    header_doubts = doc.add_paragraph()
-    r_hd = header_doubts.add_run("2. DOUBTS & CLARIFICATIONS")
-    r_hd.bold = True
-    r_hd.font.size = Pt(14)
-    
-    doubts = data.get("doubts_and_clarifications") or []
-    for d in doubts:
-        q = d.get("question") or ""
-        a = d.get("answer") or ""
-        p_d = doc.add_paragraph(style="List Bullet")
-        p_d.add_run("Q: ").bold = True
-        p_d.add_run(f"{q}   ")
-        p_d.add_run("A: ").bold = True
-        p_d.add_run(str(a))
-        
-    doc.add_paragraph().paragraph_format.space_after = Pt(6)
+        for sub_idx, note_item in enumerate(detailed_notes, start=1):
+            if isinstance(note_item, dict):
+                t_title = note_item.get("topic_title") or note_item.get("topic_name") or f"Topic {sub_idx}"
+                explanation = note_item.get("explanation") or note_item.get("summary") or ""
+                key_pts = note_item.get("key_points") or []
 
-    # 3. ASSIGNMENTS & FOLLOW-UPS
-    header_assign = doc.add_paragraph()
-    r_ha = header_assign.add_run("3. ASSIGNMENTS & FOLLOW-UPS")
-    r_ha.bold = True
-    r_ha.font.size = Pt(14)
-    
-    assignments = data.get("assignments_and_follow_ups") or []
-    for a in assignments:
-        desc = a.get("description") or ""
-        due = a.get("due_date") or ""
-        p_a = doc.add_paragraph(style="List Bullet")
-        p_a.add_run("[ ] ")
-        p_a.add_run(f"{desc}   ")
-        p_a.add_run("Due: ").bold = True
-        p_a.add_run(str(due))
-        
-    doc.add_paragraph().paragraph_format.space_after = Pt(6)
+                p_sub = doc.add_paragraph()
+                r_st = p_sub.add_run(f"{section_num - 1}.{sub_idx} {t_title}")
+                r_st.bold = True
+                r_st.font.size = Pt(11)
+                p_sub.paragraph_format.space_before = Pt(6)
+                p_sub.paragraph_format.space_after = Pt(3)
 
-    # 4. RESOURCES REFERENCED
-    header_res = doc.add_paragraph()
-    r_hr = header_res.add_run("4. RESOURCES REFERENCED")
-    r_hr.bold = True
-    r_hr.font.size = Pt(14)
-    
-    resources = data.get("resources_referenced") or []
-    for res in resources:
-        doc.add_paragraph(str(res), style="List Bullet")
-        
-    doc.add_paragraph().paragraph_format.space_after = Pt(6)
+                if explanation:
+                    p_exp = doc.add_paragraph(str(explanation).strip())
+                    p_exp.paragraph_format.space_after = Pt(4)
 
-    # 5. SESSION SUMMARY
-    header_summ = doc.add_paragraph()
-    r_hs = header_summ.add_run("5. SESSION SUMMARY")
-    r_hs.bold = True
-    r_hs.font.size = Pt(14)
-    
-    summ = data.get("session_summary") or ""
-    doc.add_paragraph(str(summ))
+                if key_pts:
+                    if isinstance(key_pts, str):
+                        key_pts = [key_pts]
+                    for kp in key_pts:
+                        p_kp = doc.add_paragraph(style="List Bullet")
+                        p_kp.add_run(str(kp).strip())
+                        p_kp.paragraph_format.space_after = Pt(2)
+            elif isinstance(note_item, str):
+                p_txt = doc.add_paragraph(style="List Bullet")
+                p_txt.add_run(note_item.strip())
+                p_txt.paragraph_format.space_after = Pt(2)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+        section_num += 1
+
+    # 4. Important Concepts & Definitions
+    important_concepts = data.get("important_concepts") or []
+    if important_concepts:
+        p_hdr = doc.add_paragraph()
+        r_hdr = p_hdr.add_run(f"{section_num}. Important Concepts")
+        r_hdr.bold = True
+        r_hdr.font.size = Pt(13)
+        p_hdr.paragraph_format.space_before = Pt(10)
+        p_hdr.paragraph_format.space_after = Pt(4)
+
+        for concept in important_concepts:
+            if isinstance(concept, dict):
+                term = concept.get("term_or_concept") or concept.get("term") or ""
+                defn = concept.get("definition_or_explanation") or concept.get("explanation") or ""
+                p_c = doc.add_paragraph(style="List Bullet")
+                if term:
+                    r_term = p_c.add_run(f"{term}: ")
+                    r_term.bold = True
+                p_c.add_run(str(defn).strip())
+                p_c.paragraph_format.space_after = Pt(2)
+            elif isinstance(concept, str):
+                p_c = doc.add_paragraph(style="List Bullet")
+                p_c.add_run(concept.strip())
+                p_c.paragraph_format.space_after = Pt(2)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+        section_num += 1
+
+    # 5. Examples / Demonstrations
+    examples = data.get("examples_demonstrations") or data.get("examples") or []
+    if isinstance(examples, str):
+        examples = [examples]
+    if examples:
+        p_hdr = doc.add_paragraph()
+        r_hdr = p_hdr.add_run(f"{section_num}. Examples / Demonstrations")
+        r_hdr.bold = True
+        r_hdr.font.size = Pt(13)
+        p_hdr.paragraph_format.space_before = Pt(10)
+        p_hdr.paragraph_format.space_after = Pt(4)
+
+        for ex in examples:
+            if ex and str(ex).strip():
+                p_ex = doc.add_paragraph(style="List Bullet")
+                p_ex.add_run(str(ex).strip())
+                p_ex.paragraph_format.space_after = Pt(2)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+        section_num += 1
+
+    # 6. Code / Technical Examples
+    code_examples = data.get("code_technical_examples") or []
+    if code_examples:
+        p_hdr = doc.add_paragraph()
+        r_hdr = p_hdr.add_run(f"{section_num}. Code / Technical Examples")
+        r_hdr.bold = True
+        r_hdr.font.size = Pt(13)
+        p_hdr.paragraph_format.space_before = Pt(10)
+        p_hdr.paragraph_format.space_after = Pt(4)
+
+        for item in code_examples:
+            if isinstance(item, dict):
+                lang = item.get("language_or_context") or "Code"
+                code = item.get("code_snippet") or ""
+                expl = item.get("explanation") or ""
+
+                p_l = doc.add_paragraph()
+                r_l = p_l.add_run(f"Language / Context: {lang}")
+                r_l.bold = True
+                p_l.paragraph_format.space_before = Pt(4)
+
+                if code:
+                    p_code = doc.add_paragraph()
+                    r_code = p_code.add_run(code)
+                    r_code.font.name = 'Consolas'
+                    r_code.font.size = Pt(9.5)
+                    p_code.paragraph_format.left_indent = Pt(15)
+                    p_code.paragraph_format.space_after = Pt(4)
+
+                if expl:
+                    p_e = doc.add_paragraph(f"Explanation: {expl}")
+                    p_e.paragraph_format.space_after = Pt(4)
+            elif isinstance(item, str):
+                p_c = doc.add_paragraph(item)
+                p_c.paragraph_format.space_after = Pt(4)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+        section_num += 1
+
+    # 7. Questions & Answers
+    qna = data.get("questions_and_answers") or data.get("doubts_and_clarifications") or []
+    if qna:
+        p_hdr = doc.add_paragraph()
+        r_hdr = p_hdr.add_run(f"{section_num}. Questions & Answers")
+        r_hdr.bold = True
+        r_hdr.font.size = Pt(13)
+        p_hdr.paragraph_format.space_before = Pt(10)
+        p_hdr.paragraph_format.space_after = Pt(4)
+
+        for item in qna:
+            if isinstance(item, dict):
+                q = item.get("question") or ""
+                a = item.get("answer") or ""
+                p_qa = doc.add_paragraph()
+                r_q = p_qa.add_run(f"Q: {q}\n")
+                r_q.bold = True
+                r_a = p_qa.add_run(f"A: {a}")
+                p_qa.paragraph_format.space_after = Pt(4)
+            elif isinstance(item, str):
+                p_qa = doc.add_paragraph(item)
+                p_qa.paragraph_format.space_after = Pt(4)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+        section_num += 1
+
+    # 8. Practical Tips & Recommendations
+    tips = data.get("practical_tips") or []
+    if isinstance(tips, str):
+        tips = [tips]
+    if tips:
+        p_hdr = doc.add_paragraph()
+        r_hdr = p_hdr.add_run(f"{section_num}. Practical Tips & Recommendations")
+        r_hdr.bold = True
+        r_hdr.font.size = Pt(13)
+        p_hdr.paragraph_format.space_before = Pt(10)
+        p_hdr.paragraph_format.space_after = Pt(4)
+
+        for tip in tips:
+            if tip and str(tip).strip():
+                p_tip = doc.add_paragraph(style="List Bullet")
+                p_tip.add_run(str(tip).strip())
+                p_tip.paragraph_format.space_after = Pt(2)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+        section_num += 1
+
+    # 9. Key Takeaways
+    takeaways = data.get("key_takeaways") or []
+    if isinstance(takeaways, str):
+        takeaways = [takeaways]
+    if takeaways:
+        p_hdr = doc.add_paragraph()
+        r_hdr = p_hdr.add_run(f"{section_num}. Key Takeaways")
+        r_hdr.bold = True
+        r_hdr.font.size = Pt(13)
+        p_hdr.paragraph_format.space_before = Pt(10)
+        p_hdr.paragraph_format.space_after = Pt(4)
+
+        for kw in takeaways:
+            if kw and str(kw).strip():
+                p_kw = doc.add_paragraph(style="List Bullet")
+                p_kw.add_run(str(kw).strip())
+                p_kw.paragraph_format.space_after = Pt(2)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+        section_num += 1
+
+    # 10. Final Summary
+    summary = data.get("final_summary") or data.get("session_summary")
+    if summary and str(summary).strip():
+        p_hdr = doc.add_paragraph()
+        r_hdr = p_hdr.add_run(f"{section_num}. Final Summary")
+        r_hdr.bold = True
+        r_hdr.font.size = Pt(13)
+        p_hdr.paragraph_format.space_before = Pt(10)
+        p_hdr.paragraph_format.space_after = Pt(4)
+
+        p_s = doc.add_paragraph(str(summary).strip())
+        p_s.paragraph_format.space_after = Pt(6)
 
     # SAVE DOCUMENT
     try:
         doc.save(path)
-        print("[OK] Online Session DOCX saved:", path)
+        print("[OK] Class Notes DOCX saved:", path)
     except Exception as e:
         print("[ERROR] DOCX save failed:", e)
         raise

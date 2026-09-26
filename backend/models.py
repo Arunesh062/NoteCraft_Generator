@@ -23,8 +23,18 @@ class ChunkMeta(BaseModel):
 # ── /finalize ──────────────────────────────────────────────────
 class FinalizeRequest(BaseModel):
     session_id:       str
+    mode:             Optional[str] = "mom"
     participants:     List[str] = []
     speaker_timeline: List[SpeakerEvent] = []
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def validate_mode(cls, v):
+        if v is None or v == "":
+            return "mom"
+        if v not in ["mom", "class_notes"]:
+            raise ValueError("Invalid mode. Allowed values: 'mom', 'class_notes'")
+        return v
 
     @field_validator("speaker_timeline", mode="before")
     @classmethod

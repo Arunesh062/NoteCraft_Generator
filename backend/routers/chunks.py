@@ -11,11 +11,12 @@ router = APIRouter()
 # ── POST /upload-chunk ─────────────────────────────────────────
 @router.post("/upload-chunk")
 async def upload_chunk(
-    audio:           UploadFile = File(...),
-    session_id:      str        = Form(...),
-    chunk_index:     int        = Form(...),
-    speaker_timeline: str       = Form(default="[]"),
-    participants:    str        = Form(default="[]"),
+    audio:            UploadFile = File(...),
+    session_id:       str        = Form(...),
+    chunk_index:      int        = Form(...),
+    speaker_timeline: str        = Form(default="[]"),
+    participants:     str        = Form(default="[]"),
+    mode:             str        = Form(default="mom"),
 ):
     """
     Receives a single merged audio chunk (tab + mic) from the extension.
@@ -27,7 +28,7 @@ async def upload_chunk(
 
     # ── Parse JSON strings from form fields ───────────────────
     try:
-        timeline     = json.loads(speaker_timeline)
+        timeline          = json.loads(speaker_timeline)
         participants_list = json.loads(participants)
     except json.JSONDecodeError:
         timeline          = []
@@ -36,7 +37,7 @@ async def upload_chunk(
     # ── Create session if first chunk ─────────────────────────
     session = get_session(session_id)
     if not session:
-        create_session(session_id, participants_list, timeline)
+        create_session(session_id, participants_list, timeline, mode=mode)
 
     # ── Read audio bytes ───────────────────────────────────────
     audio_bytes = await audio.read()

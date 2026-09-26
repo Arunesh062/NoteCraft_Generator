@@ -19,7 +19,9 @@ from services.llm_client import (
     summarise_chunk,
     aggregate_block,
     generate_mom,
+    generate_notes,
     refine_mom,
+    refine_notes,
 )
 from services.speaker_map import assign_speakers
 from services.export import export_documents
@@ -38,15 +40,25 @@ async def finalize(request: FinalizeRequest):
     Runs full pipeline in background and returns immediately.
     """
     session_id = request.session_id
-    session    = get_session(session_id)
+    mode       = request.mode or "mom"
+
+    if mode not in ["mom", "class_notes"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid mode. Allowed values: 'mom', 'class_notes'"
+        )
+
+    session = get_session(session_id)
 
     # ── Auto-create session if it doesn't exist ──────────────
     # This handles direct API testing without prior chunk uploads
     if not session:
         create_session(session_id, request.participants, [
             e.dict() for e in request.speaker_timeline
-        ])
+        ], mode=mode)
         session = get_session(session_id)
+    else:
+        session["mode"] = mode
 
     # ── Update speaker timeline and participants ────────────────
     if request.speaker_timeline:
@@ -76,6 +88,7 @@ async def run_pipeline(session_id: str):
     """
     try:
         session = get_session(session_id)
+        mode    = session.get("mode", "mom") if session else "mom"
 
         # ── Step 1: Retry failed chunks ────────────────────────
         failed = get_failed_chunks(session_id)
@@ -94,8 +107,8 @@ async def run_pipeline(session_id: str):
         block_summaries = await _aggregate_blocks(session_id, chunks)
         save_block_summaries(session_id, block_summaries)
 
-        # ── Step 4: Generate final MoM JSON ───────────────────
-        print("Generating final Notes...")
+        # ── Step 4: Generate final Notes JSON ──────────────────
+        print(f"Generating final Notes (mode={mode})...")
         participants = session.get("participants", [])
         meeting_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -115,17 +128,18 @@ async def run_pipeline(session_id: str):
             mins = round((len(chunks) * 30) / 60)
             duration_minutes = str(mins) if mins > 0 else "< 1"
 
-        mom_json = await generate_mom(
+        notes_json = await generate_notes(
             block_summaries=block_summaries,
             participants=participants,
             meeting_date=meeting_date,
             duration_minutes=duration_minutes,
+            mode=mode,
             session_id=session_id
         )
 
         # ── Step 5: Refinement pass ────────────────────────────
-        print("Refining MoM...")
-        final_json = await refine_mom(mom_json, session_id=session_id)
+        print(f"Refining Notes (mode={mode})...")
+        final_json = await refine_notes(notes_json, session_id=session_id)
         save_mom(session_id, final_json)
 
         # ── Step 6: Document generation ────────────────────────

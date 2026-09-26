@@ -4,9 +4,10 @@ from typing import Dict, Any, List, Optional
 sessions: Dict[str, Any] = {}
 
 
-def create_session(session_id: str, participants: List[str], speaker_timeline: List[dict]):
+def create_session(session_id: str, participants: List[str], speaker_timeline: List[dict], mode: str = "mom"):
     sessions[session_id] = {
         "status":           "processing",
+        "mode":             mode,
         "participants":     participants,
         "speaker_timeline": speaker_timeline,
         "chunks":           {},
@@ -15,6 +16,11 @@ def create_session(session_id: str, participants: List[str], speaker_timeline: L
         "pdf_url":          None,
         "docx_url":         None,
     }
+
+
+def save_mode(session_id: str, mode: str):
+    if session_id in sessions:
+        sessions[session_id]["mode"] = mode
 
 
 def save_chunk(session_id: str, chunk_index: int, data: dict):
