@@ -125,14 +125,15 @@
 
 
 #  new code 
+import os
+import uuid
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-import os
-
 from models import StatusResponse
 from session.store import get_session, delete_session
+from services.export import export_documents
 
 router = APIRouter()
 
@@ -141,6 +142,38 @@ OUTPUTS_DIR = os.path.abspath(
 )
 
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
+
+
+# ─────────────────────────────────────────────
+# EXPORT DOCX FROM STORED JSON
+# ─────────────────────────────────────────────
+@router.post("/export-docx")
+async def export_docx_from_json(payload: dict):
+    notes = payload.get("generated_notes") or payload.get("mom_json") or payload
+    if not isinstance(notes, dict):
+        raise HTTPException(status_code=400, detail="Invalid notes payload")
+
+    session_id = str(payload.get("session_id") or payload.get("id") or f"hist_{uuid.uuid4().hex[:8]}")
+    try:
+        _, docx_url = export_documents(notes, session_id)
+        filename = os.path.basename(docx_url)
+        file_path = os.path.abspath(os.path.join(OUTPUTS_DIR, filename))
+
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=500, detail="Failed to generate document")
+
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            ),
+        )
+    except Exception as e:
+        print("Export DOCX error:", e)
+        raise HTTPException(status_code=500, detail=f"Failed to generate DOCX: {str(e)}")
+
 
 
 # ─────────────────────────────────────────────
@@ -162,6 +195,7 @@ async def get_status(session_id: str):
         status=session.get("status", "processing"),
         pdf_url=session.get("pdf_url"),
         docx_url=session.get("docx_url"),
+        notes_data=session.get("mom_json"),
     )
 
 

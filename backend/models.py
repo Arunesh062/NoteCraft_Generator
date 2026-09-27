@@ -65,6 +65,7 @@ class StatusResponse(BaseModel):
     status:     str
     pdf_url:    Optional[str] = None
     docx_url:   Optional[str] = None
+    notes_data: Optional[dict] = None
 
 
 # ── Internal chunk data ────────────────────────────────────────

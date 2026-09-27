@@ -243,7 +243,10 @@ import { BACKEND_URL } from './config.js';
         const data = response.data;
         if (data.status === 'ready') {
           clearInterval(pollId);
-          chrome.storage.local.set({ currentState: 'ready' });
+          chrome.storage.local.set({ 
+            currentState: 'ready',
+            generatedNotes: data.notes_data || null
+          });
         } else if (data.status === 'failed') {
           clearInterval(pollId);
           alert("NoteCraft Backend failed to process the meeting.");

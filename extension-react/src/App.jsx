@@ -1,30 +1,28 @@
 /**
- * NoteCraft AI — Floating Widget
+ * NoteCraft AI — Floating Widget & Popup Component
  *
  * Architecture decisions:
  * ─────────────────────────────────────────────────────────────────
- * 1. SINGLE JSX TREE — both FAB and expanded card are always in the
- *    DOM; visibility is toggled by CSS class only.  This prevents
- *    React from unmounting/remounting and losing all internal state.
+ * 1. FIREBASE AUTH WRAPPER — AuthProvider wraps AppMain so auth state is
+ *    resolved cleanly before rendering the main application.
  *
- * 2. FULLY REF-BASED DRAG — position is stored in a ref AND in state.
- *    Drag handlers close over refs, never over state, so they are
- *    immune to stale closures regardless of how often the component
- *    re-renders or dependencies change.
+ * 2. FIRESTORE NOTE HISTORY — Authenticated users automatically save
+ *    generated notes to Firestore and can view, open, and delete them
+ *    via the "My Notes" tab.
  *
- * 3. SAFE POSITION — every path that produces a position value
- *    normalises it through safePos() so top/left can never be
- *    undefined, NaN, or negative.
- *
- * 4. DRAG / CLICK DISAMBIGUATION — a drag is only registered when
- *    the pointer moves > 4 px. If it doesn't, the mouseup is
- *    treated as a plain click (toggle minimise on FAB).
+ * 3. SINGLE JSX TREE — both FAB and expanded card are always in the
+ *    DOM; visibility is toggled by CSS class only.
  * ─────────────────────────────────────────────────────────────────
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Square, Download, RefreshCw, Minus, Loader2, X } from 'lucide-react';
+import { Play, Square, Download, RefreshCw, Minus, Loader2, X, LogOut, Clock, FileText, AlertTriangle } from 'lucide-react';
 import { BACKEND_URL } from '../config.js';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import Login from './components/Login';
+import Signup from './components/Signup';
+import HistoryList from './components/HistoryList';
+import { saveNoteToHistory } from './services/notesHistory';
 
 /* ── helpers ──────────────────────────────────────────────────── */
 
@@ -45,10 +43,14 @@ const mapStateToScreen = (state) => {
   return state;
 };
 
-/* ── component ────────────────────────────────────────────────── */
+/* ── Inner App Main component ─────────────────────────────────── */
 
-const App = ({ mode = 'popup' }) => {
+const AppMain = ({ mode = 'popup' }) => {
+  const { currentUser, loading, logout } = useAuth();
+  const [authView, setAuthView] = useState('login'); // 'login' | 'signup'
+
   /* ── state ── */
+  const [activeTab,      setActiveTab]      = useState('session'); // session | history
   const [screen,         setScreen]         = useState('start');   // start | recording | processing | complete
   const [timer,          setTimer]          = useState('00:00');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -59,20 +61,18 @@ const App = ({ mode = 'popup' }) => {
   const [downloadUrl,    setDownloadUrl]    = useState('');
   const [isVisible,      setIsVisible]      = useState(true);
   const [selectedMode,   setSelectedMode]   = useState('mom');     // mom | class_notes
+  const [saveError,      setSaveError]      = useState('');
 
   /* ── refs (immune to render cycles) ── */
-  const posRef       = useRef(DEFAULT_POS); // always reflects latest position
-  const timerRef     = useRef(null);
-  const didDragRef   = useRef(false);        // true if pointer moved > threshold during a mousedown
-  const isMinRef     = useRef(false);        // mirrors isMinimized so drag handlers see current value
+  const posRef          = useRef(DEFAULT_POS); // always reflects latest position
+  const timerRef        = useRef(null);
+  const didDragRef      = useRef(false);       // true if pointer moved > threshold during a mousedown
+  const isMinRef        = useRef(false);       // mirrors isMinimized so drag handlers see current value
+  const savedSessionRef = useRef(null);        // prevents duplicate Firestore saves
 
   /* keep refs in sync with state */
   useEffect(() => { posRef.current    = position;    }, [position]);
   useEffect(() => { isMinRef.current  = isMinimized; }, [isMinimized]);
-
-  // Console logs for debugging as requested
-  console.log("Current screen:", screen);
-  console.log("Rendering screen:", screen);
 
   /* ── format ── */
   const formatTime = (s) => {
@@ -99,7 +99,6 @@ const App = ({ mode = 'popup' }) => {
         setDownloadUrl(data.downloadUrl || '');
         setIsVisible(data.nc_visible !== false);
         setSelectedMode(data.selectedMode || 'mom');
-        // Always validate the stored position
         if (data.nc_pos) {
           const p = safePos(data.nc_pos);
           posRef.current = p;
@@ -109,7 +108,6 @@ const App = ({ mode = 'popup' }) => {
     );
 
     const onStorageChange = (changes) => {
-      // Re-show widget if a recording actually starts (ignore 'idle' reset)
       if (changes.currentState && ['recording', 'processing', 'ready'].includes(changes.currentState.newValue)) {
         setIsVisible(true);
       }
@@ -151,6 +149,29 @@ const App = ({ mode = 'popup' }) => {
     return () => chrome.storage.onChanged.removeListener(onStorageChange);
   }, []);
 
+  /* ── Automatic Firestore note saving on successful generation ── */
+  useEffect(() => {
+    if ((screen === 'complete' || screen === 'ready') && currentUser?.uid && sessionId) {
+      if (savedSessionRef.current === sessionId) return;
+
+      if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
+        chrome.storage.local.get(['generatedNotes', 'selectedMode'], async (data) => {
+          const notes = data.generatedNotes || {};
+          const modeToSave = data.selectedMode || selectedMode || 'mom';
+          try {
+            savedSessionRef.current = sessionId;
+            setSaveError('');
+            await saveNoteToHistory(currentUser.uid, sessionId, modeToSave, notes);
+            console.log('✅ Note automatically saved to Firestore history for user:', currentUser.uid);
+          } catch (err) {
+            console.error('❌ Firestore note save error:', err);
+            setSaveError("Your notes were generated, but we couldn't save them to history.");
+          }
+        });
+      }
+    }
+  }, [screen, currentUser?.uid, sessionId]);
+
   /* ── mode change handler ── */
   const handleModeChange = (newMode) => {
     if (screen !== 'start' && screen !== 'idle') return;
@@ -185,6 +206,10 @@ const App = ({ mode = 'popup' }) => {
 
   /* ── recording actions ── */
   const handleStart = () => {
+    if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
+      chrome.storage.local.set({ selectedMode });
+    }
+
     if (mode === 'popup') {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0]) chrome.tabs.sendMessage(tabs[0].id, { action: 'START_RECORDING' });
@@ -210,12 +235,16 @@ const App = ({ mode = 'popup' }) => {
     });
   };
 
-  /**
-   * Reusable function to completely reset the NoteCraft session
-   * and all associated React / extension state.
-   */
+  const handleLogout = async () => {
+    try {
+      await logout();
+      setAuthView('login');
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+  };
+
   const resetSession = () => {
-    // 1. Reset all React states instantly
     setScreen("start");
     setTimer("00:00");
     setTranscript("");
@@ -223,8 +252,10 @@ const App = ({ mode = 'popup' }) => {
     setSessionId(null);
     setIsMinimized(false);
     setSelectedMode("mom");
+    setSaveError("");
+    savedSessionRef.current = null;
+    setActiveTab("session");
 
-    // 2. Clear session-specific storage entries (preserving layout/position, nc_pos)
     if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
       chrome.storage.local.remove([
         'currentState',
@@ -232,9 +263,9 @@ const App = ({ mode = 'popup' }) => {
         'elapsedSeconds',
         'transcript',
         'downloadUrl',
-        'nc_minimized'
+        'nc_minimized',
+        'generatedNotes'
       ], () => {
-        // Force state update to notify any other active contexts/listeners
         chrome.storage.local.set({
           currentState: 'idle',
           nc_minimized: false,
@@ -243,13 +274,9 @@ const App = ({ mode = 'popup' }) => {
       });
     }
 
-    // 3. Notify the content script or other local scripts to completely tear down active session
     window.dispatchEvent(new CustomEvent('nc-session-reset'));
   };
 
-  /**
-   * Completely hides the widget from the screen and resets the session.
-   */
   const closeWidget = () => {
     resetSession();
     setIsVisible(false);
@@ -258,12 +285,9 @@ const App = ({ mode = 'popup' }) => {
     }
   };
 
-  /* ── toggle minimise ──
-     Called by the FAB (onClick) and by the minus button.
-     Suppressed if the pointer just finished a drag.              */
   const toggleMinimize = (e) => {
     e.stopPropagation();
-    if (didDragRef.current) return;          // suppress — was a drag, not a click
+    if (didDragRef.current) return;
     const next = !isMinRef.current;
     setIsMinimized(next);
     if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
@@ -271,9 +295,6 @@ const App = ({ mode = 'popup' }) => {
     }
   };
 
-  /* ── DRAG — single implementation, used by both FAB and header ──
-     All values come from refs, so this function never needs to be
-     recreated via useCallback; it is defined once at mount time.   */
   const makeDragHandler = () => (e) => {
     if (mode !== 'widget') return;
     e.preventDefault();
@@ -294,21 +315,18 @@ const App = ({ mode = 'popup' }) => {
       }
 
       const newPos = safePos({ top: startTop + dy, left: startLeft + dx });
-      posRef.current = newPos;              // instant — no re-render lag
-      setPosition(newPos);                  // schedule re-render for the visual update
+      posRef.current = newPos;
+      setPosition(newPos);
     };
 
     const onUp = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup',   onUp);
 
-      // Save final position to storage
       if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
         chrome.storage.local.set({ nc_pos: posRef.current });
       }
 
-      // Reset didDragRef AFTER the click event has been dispatched
-      // (click fires synchronously before the next task)
       setTimeout(() => { didDragRef.current = false; }, 0);
     };
 
@@ -316,12 +334,9 @@ const App = ({ mode = 'popup' }) => {
     window.addEventListener('mouseup',   onUp);
   };
 
-  // Create stable handler references that live for the component lifetime.
-  // We use useRef here so they are never re-created (no stale closures).
   const fabDragHandler    = useRef(makeDragHandler()).current;
   const headerDragHandler = useRef(makeDragHandler()).current;
 
-  /* ── derived safe style position ── */
   const pos = safePos(position);
   const widgetStyle = mode === 'widget'
     ? { position: 'fixed', top: pos.top, left: pos.left, zIndex: 2147483647 }
@@ -329,15 +344,57 @@ const App = ({ mode = 'popup' }) => {
 
   const isRecordingScreen = screen === 'recording';
 
-  /* ════════════════════════════════════════════════════════════
-     RENDER — single tree, both FAB and card always in the DOM.
-     CSS class drives which one is visible.
-  ════════════════════════════════════════════════════════════ */
-  
   if (mode === 'widget' && !isVisible) {
     return null;
   }
 
+  // 1. Loading state while Firebase auth is resolving
+  if (loading) {
+    return (
+      <div className="nc-widget" style={widgetStyle}>
+        <div className="nc-header">
+          <div className="nc-logo-group">
+            <div className="nc-dot" />
+            <span className="nc-title">NoteCraft AI</span>
+          </div>
+        </div>
+        <div className="nc-body nc-center-loading">
+          <Loader2 className="nc-spin" size={24} style={{ color: 'var(--nc-accent)' }} />
+          <p className="nc-status" style={{ marginTop: 10 }}>Resolving session…</p>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Unauthenticated state -> render Login or Signup screen
+  if (!currentUser) {
+    return (
+      <div className="nc-widget" style={widgetStyle}>
+        <div className="nc-header">
+          <div className="nc-logo-group">
+            <div className="nc-dot" />
+            <span className="nc-title">NoteCraft AI</span>
+          </div>
+          {mode === 'widget' && (
+            <div className="nc-actions">
+              <button className="nc-action-btn nc-close-btn" onClick={closeWidget} title="Close NoteCraft">
+                <X size={14} />
+              </button>
+            </div>
+          )}
+        </div>
+        <div className="nc-body">
+          {authView === 'login' ? (
+            <Login onSwitchToSignup={() => setAuthView('signup')} />
+          ) : (
+            <Signup onSwitchToLogin={() => setAuthView('login')} />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // 3. Authenticated state -> render main NoteCraft application
   return (
     <>
       {/* ── MINIMISED FAB BUBBLE ─────────────────────────────── */}
@@ -362,7 +419,6 @@ const App = ({ mode = 'popup' }) => {
 
       {/* ── EXPANDED WIDGET CARD ─────────────────────────────── */}
       <div
-        key={screen}
         className={[
           'nc-widget',
           isRecordingScreen                           ? 'recording'    : '',
@@ -370,7 +426,7 @@ const App = ({ mode = 'popup' }) => {
         ].join(' ')}
         style={widgetStyle}
       >
-        {/* Header — drag handle */}
+        {/* Header — drag handle & user account info */}
         <div
           className="nc-header"
           onMouseDown={mode === 'widget' ? headerDragHandler : undefined}
@@ -380,6 +436,19 @@ const App = ({ mode = 'popup' }) => {
             <span className="nc-title">NoteCraft AI</span>
           </div>
           <div className="nc-actions">
+            <div className="nc-user-info" title={currentUser.email || ''}>
+              <span className="nc-user-name">
+                👤 {currentUser.displayName || currentUser.email?.split('@')[0] || 'User'}
+              </span>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="nc-logout-btn"
+                title="Logout"
+              >
+                <LogOut size={13} />
+              </button>
+            </div>
             {mode === 'widget' && (
               <>
                 <button
@@ -401,79 +470,133 @@ const App = ({ mode = 'popup' }) => {
           </div>
         </div>
 
-        {/* Body with guaranteed fallbacks to prevent empty/blank states */}
+        {/* Navigation Tab Bar */}
+        <div className="nc-nav-tabs">
+          <button
+            type="button"
+            className={`nc-nav-tab ${activeTab === 'session' ? 'active' : ''}`}
+            onClick={() => setActiveTab('session')}
+          >
+            <FileText size={13} /> New Session
+          </button>
+          <button
+            type="button"
+            className={`nc-nav-tab ${activeTab === 'history' ? 'active' : ''}`}
+            onClick={() => setActiveTab('history')}
+          >
+            <Clock size={13} /> My Notes
+          </button>
+        </div>
+
+        {/* Body */}
         <div className="nc-body">
-          {(screen === 'start' || screen === 'idle' || !['recording', 'processing', 'complete', 'ready'].includes(screen)) && (
-            <div className="nc-content">
-              <div className="nc-mode-selector">
-                <span className="nc-mode-label">Select Output Mode</span>
-                <div className="nc-mode-options">
-                  <button
-                    type="button"
-                    className={`nc-mode-card ${selectedMode === 'mom' ? 'active' : ''}`}
-                    onClick={() => handleModeChange('mom')}
-                  >
-                    <div className="nc-mode-title">MOM</div>
-                    <div className="nc-mode-desc">Meeting Minutes</div>
-                  </button>
-                  <button
-                    type="button"
-                    className={`nc-mode-card ${selectedMode === 'class_notes' ? 'active' : ''}`}
-                    onClick={() => handleModeChange('class_notes')}
-                  >
-                    <div className="nc-mode-title">CLASS / WEBINAR</div>
-                    <div className="nc-mode-desc">Detailed Notes</div>
+          {activeTab === 'history' ? (
+            <HistoryList onStartNewSession={() => { resetSession(); setActiveTab('session'); }} />
+          ) : (
+            <>
+              {(screen === 'start' || screen === 'idle' || !['recording', 'processing', 'complete', 'ready'].includes(screen)) && (
+                <div className="nc-content">
+                  <div className="nc-mode-selector">
+                    <span className="nc-mode-label">Select Output Mode</span>
+                    <div className="nc-mode-options">
+                      <button
+                        type="button"
+                        className={`nc-mode-card ${selectedMode === 'mom' ? 'active' : ''}`}
+                        onClick={() => handleModeChange('mom')}
+                      >
+                        <div className="nc-mode-title">MOM</div>
+                        <div className="nc-mode-desc">Meeting Minutes</div>
+                      </button>
+                      <button
+                        type="button"
+                        className={`nc-mode-card ${selectedMode === 'class_notes' ? 'active' : ''}`}
+                        onClick={() => handleModeChange('class_notes')}
+                      >
+                        <div className="nc-mode-title">CLASS / WEBINAR</div>
+                        <div className="nc-mode-desc">Detailed Notes</div>
+                      </button>
+                    </div>
+                  </div>
+                  <button onClick={handleStart} className="nc-btn nc-btn-primary">
+                    <Play size={16} /> Start Recording
                   </button>
                 </div>
-              </div>
-              <button onClick={handleStart} className="nc-btn nc-btn-primary">
-                <Play size={16} /> Start Recording
-              </button>
-            </div>
-          )}
+              )}
 
-          {screen === 'recording' && (
-            <div className="nc-content">
-              <div className="nc-recording-badge">● Live Recording</div>
-              <div className="nc-timer">{timer}</div>
-              <button onClick={handleStop} className="nc-btn nc-btn-danger">
-                <Square size={16} /> Stop Meeting
-              </button>
-            </div>
-          )}
-
-          {screen === 'processing' && (
-            <div className="nc-content">
-              <p className="nc-title-text">Orchestrating Notes</p>
-              <div className="nc-progress-container">
-                <div className="nc-progress-bar">
-                  <div className="nc-progress-inner" />
+              {screen === 'recording' && (
+                <div className="nc-content">
+                  <div className="nc-recording-badge">● Live Recording</div>
+                  <div className="nc-recording-mode-indicator">
+                    <span className="nc-recording-mode-icon">
+                      {selectedMode === 'class_notes' ? '📚' : '📋'}
+                    </span>
+                    <div className="nc-recording-mode-text">
+                      <div className="nc-recording-mode-title">
+                        {selectedMode === 'class_notes' ? 'CLASS / WEBINAR' : 'MOM'}
+                      </div>
+                      <div className="nc-recording-mode-desc">
+                        {selectedMode === 'class_notes' ? 'Detailed Notes' : 'Meeting Minutes'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="nc-timer">{timer}</div>
+                  <button onClick={handleStop} className="nc-btn nc-btn-danger">
+                    <Square size={16} /> {selectedMode === 'class_notes' ? 'Stop Recording' : 'Stop Meeting'}
+                  </button>
                 </div>
-              </div>
-              <p className="nc-status">Synthesising AI insights…</p>
-              <Loader2 className="nc-spin" style={{ margin: '8px auto', display: 'block' }} />
-            </div>
-          )}
+              )}
 
-          {(screen === 'complete' || screen === 'ready') && (
-            <div className="nc-content">
-              <p className="nc-title-text" style={{ color: '#10b981' }}>
-                ✓ {selectedMode === 'class_notes' ? 'Class / Webinar Notes Ready!' : 'Meeting Minutes Ready!'}
-              </p>
-              <div className="nc-type-badge">
-                Type: {selectedMode === 'class_notes' ? 'Class / Webinar Notes' : 'Meeting Minutes'}
-              </div>
-              <button onClick={handleDownload} className="nc-btn nc-btn-success">
-                <Download size={16} /> Download DOCX
-              </button>
-              <button onClick={resetSession} className="nc-btn nc-btn-ghost">
-                <RefreshCw size={14} /> New Session
-              </button>
-            </div>
+              {screen === 'processing' && (
+                <div className="nc-content">
+                  <p className="nc-title-text">Orchestrating Notes</p>
+                  <div className="nc-progress-container">
+                    <div className="nc-progress-bar">
+                      <div className="nc-progress-inner" />
+                    </div>
+                  </div>
+                  <p className="nc-status">Synthesising AI insights…</p>
+                  <Loader2 className="nc-spin" style={{ margin: '8px auto', display: 'block' }} />
+                </div>
+              )}
+
+              {(screen === 'complete' || screen === 'ready') && (
+                <div className="nc-content">
+                  <p className="nc-title-text" style={{ color: '#10b981' }}>
+                    ✓ {selectedMode === 'class_notes' ? 'Class / Webinar Notes Ready!' : 'Meeting Minutes Ready!'}
+                  </p>
+                  <div className="nc-type-badge">
+                    Type: {selectedMode === 'class_notes' ? 'Class / Webinar Notes' : 'Meeting Minutes'}
+                  </div>
+
+                  {saveError && (
+                    <div className="nc-auth-error-banner" style={{ margin: '8px 0', fontSize: '11px' }}>
+                      <AlertTriangle size={13} style={{ flexShrink: 0 }} />
+                      <span>{saveError}</span>
+                    </div>
+                  )}
+
+                  <button onClick={handleDownload} className="nc-btn nc-btn-success">
+                    <Download size={16} /> Download DOCX
+                  </button>
+                  <button onClick={resetSession} className="nc-btn nc-btn-ghost">
+                    <RefreshCw size={14} /> New Session
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
     </>
+  );
+};
+
+/* ── App wrapper with AuthProvider ────────────────────────────── */
+const App = ({ mode = 'popup' }) => {
+  return (
+    <AuthProvider>
+      <AppMain mode={mode} />
+    </AuthProvider>
   );
 };
 
