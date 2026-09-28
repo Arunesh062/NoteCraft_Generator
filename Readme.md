@@ -1,365 +1,352 @@
----
-title: NoteCraft AI Backend
-emoji: 🎙️
-colorFrom: indigo
-colorTo: purple
-sdk: docker
-app_port: 7860
-pinned: false
----
+# 🎙️ NoteCraft AI
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-3.0.0-blueviolet.svg?style=for-the-badge" alt="Version" />
-  <img src="https://img.shields.io/badge/Backend-CPU%20Only-brightgreen?style=for-the-badge" alt="CPU Only" />
-  <img src="https://img.shields.io/badge/FastAPI-v0.110+-009688?style=for-the-badge&logo=fastapi" alt="FastAPI" />
-  <img src="https://img.shields.io/badge/STT%20API-External%20HTTPS-orange?style=for-the-badge" alt="STT API" />
-  <img src="https://img.shields.io/badge/LLM%20API-Llama%203.2%203B-blue?style=for-the-badge" alt="LLM API" />
-  <img src="https://img.shields.io/badge/Chrome-MV3-4285F4?style=for-the-badge&logo=googlechrome" alt="Chrome MV3" />
+  <img src="https://img.shields.io/badge/Frontend-React%2018%20%2B%20Vite-61DAFB?style=for-the-badge&logo=react" alt="React 18" />
+  <img src="https://img.shields.io/badge/Backend-FastAPI-009688?style=for-the-badge&logo=fastapi" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/Hosting-Render-black?style=for-the-badge&logo=render" alt="Render" />
+  <img src="https://img.shields.io/badge/Database-Firebase%20Firestore-FFCA28?style=for-the-badge&logo=firebase" alt="Firebase" />
+  <img src="https://img.shields.io/badge/Extension-Chrome%20MV3-4285F4?style=for-the-badge&logo=googlechrome" alt="Chrome MV3" />
 </p>
 
-# 🎙️ NoteCraft AI
-
-### *Intelligence-Driven Minutes of Meeting (MoM) & Online Session Notes Generator*
-
-**NoteCraft AI** is a professional-grade Chrome extension + CPU-only FastAPI backend system that automatically captures live audio from virtual meetings (Google Meet, Zoom, MS Teams), transcribes it via an external Speech-to-Text (STT) HTTPS API, and synthesizes structured **Minutes of Meeting (MoM)** or **Online Session Notes** using an external LLM HTTPS API (Llama 3.2 3B).
+NoteCraft AI is an intelligent Chrome extension and Python FastAPI backend system designed to capture live audio from online meetings (Google Meet, webinars, online classes), transcribe speech using external AI Speech-to-Text (STT) APIs, synthesize structured notes using Large Language Models (LLM), and persist user note histories securely using Firebase Authentication and Firestore.
 
 ---
 
-## 🏗️ Final Architecture (CPU Only)
+## 🌟 Key Features
 
+### 📋 MOM Mode (Minutes of Meeting)
+Tailored for business, office, and team meetings. Automatically extracts key discussion points, decision items, action items with assigned owners, deadlined tasks, and executive summaries formatted into professional Minutes of Meeting (MOM).
+
+### 📚 Class / Webinar Notes Mode
+Designed specifically for technical classes, programming lectures (e.g. Java, Python, Web Development), webinars, and educational sessions. Instead of corporate meeting minutes, it synthesizes:
+- Topic overviews and core concepts
+- Technical explanations & code snippet walkthroughs
+- Key takeaways & student Q&A highlights
+- Learning resources and action steps
+
+### 🔐 Firebase Authentication
+Provides complete user authentication and account management:
+- Email & Password Registration / Login
+- One-tap Google Sign-In
+- Secure session persistence across extension reloads
+- Authenticated user state management
+
+### 📜 Note History & Cloud Persistence
+Integrates directly with Firebase Firestore (`MoM Database`) to maintain user note history:
+- Automatic saving of generated notes to the user's document path (`users/{userId}/notes/{noteId}`)
+- Dedicated **"My Notes"** tab in the Chrome extension UI
+- View, review, and delete historical notes
+- Export saved notes to DOCX format at any time
+
+---
+
+## 🏗️ System Architecture
+
+```mermaid
+flowchart TD
+    subgraph Client ["Chrome Extension (MV3 + React 18)"]
+        UI["Floating Action Button / Extension Popup"]
+        Auth["Firebase Auth (Login / Signup / Google)"]
+        TabAudio["Audio Capture (Tab Loopback + Mic)"]
+        Store["Firestore Notes Service"]
+    end
+
+    subgraph ExternalAuth ["Firebase Services (MoM Database)"]
+        FBAuth["Firebase Authentication"]
+        Firestore["Cloud Firestore (User Note History)"]
+    end
+
+    subgraph Backend ["FastAPI Backend (Deployed on Render)"]
+        Ingest["Audio Chunk Ingestion (/upload-chunk)"]
+        Pipeline["MAP-REDUCE Aggregation & Pipeline (/finalize)"]
+        Exporter["DOCX Exporter"]
+    end
+
+    subgraph AIAPIs ["External AI Services (HTTPS)"]
+        STT["Speech-to-Text API (Groq / Whisper)"]
+        LLM["LLM API (Llama 3.1 8B / Groq / HF)"]
+    end
+
+    UI --> Auth --> FBAuth
+    TabAudio --> Ingest --> STT
+    Ingest --> Pipeline --> LLM
+    Pipeline --> Exporter --> UI
+    UI --> Store --> Firestore
 ```
-Chrome Extension (Manifest V3 + React 18)
-        ↓ HTTPS
-CPU-only FastAPI Backend (Uvicorn)
-        │
-        ├── Audio chunk ingestion (30s WebM chunks)
-        ├── Speaker mapping (DOM diarization)
-        ├── MAP-REDUCE summarization pipeline
-        ├── Meeting / Online Session classification
-        ├── Final LLM refinement pass
-        └── DOCX generation (python-docx)
-        │
-        ├──→ External STT API (HTTPS)
-        │       ↓
-        │    Whisper (Remote Inference)
-        │       ↓
-        │    Normalized Transcript & Timestamps
-        │
-        └──→ External LLM API (HTTPS)
-                ↓
-        Llama 3.2 3B / Compatible LLM (Remote Inference)
-                ↓
-          Meeting Notes / MoM DOCX
-```
-
-### Why We Moved Away from Local GPUs
-
-1. **Lightweight Deployment**: The FastAPI backend no longer requires local NVIDIA GPUs, CUDA drivers, cuDNN libraries, `torch`, `ctranslate2`, `faster-whisper`, or local `vLLM`.
-2. **Universal Hosting**: The backend runs seamlessly on standard CPU servers, Hugging Face CPU Docker Spaces, or local development machines (`python run.py`).
-3. **Managed AI Inference**: All heavy speech recognition and language model computation are delegated to external, scalable HTTPS APIs.
-
----
-
-## ✨ Key Features
-
-### 🎨 Premium Floating Widget UI
-- **Draggable FAB (Floating Action Button)** overlaying active meeting tabs.
-- **Ref-based dragging** bypassing React state-update cycles for 60FPS fluid movement.
-- **Viewport Guardians** preventing widget loss off-screen.
-- **Chrome MV3 Compliant** with background service workers and offscreen audio loopback capture.
-
-### 🎧 Audio Capture & Processing Pipeline
-- **Unified Audio Loopback**: Simultaneously captures tab audio (remote speakers) and microphone into a single stream.
-- **30-second Async Chunking**: Audio is split into 30s segments and processed concurrently.
-- **External STT Client**: Sends audio chunks to an external HTTP API (Hugging Face Inference API / Groq / OpenAI), retrieving transcripts and word/segment timestamps.
-- **DOM Speaker Diarization**: Scrapes live speaker indicators from meeting tab DOM and correlates word-level timestamps to real speakers.
-- **MAP-REDUCE Aggregation**: Groups every 5 chunk summaries into block summaries before final document synthesis.
-- **Automatic Classification**: Classifies content as standard business meeting (`mom`) or educational class (`online_session`).
-- **Refinement Pass**: Final LLM pass improves formatting, tone, and JSON schema compliance.
-- **DOCX Generation**: Formats notes into professional Word documents with styled tables.
-
----
-
-## 🛠️ Tech Stack
-
-| Layer | Technology | Details |
-| :--- | :--- | :--- |
-| **Frontend** | React 18 + Vite | Chrome Extension (MV3) with Shadow DOM isolation |
-| **Backend** | FastAPI + Uvicorn | Python 3.11 ASGI server (CPU Only) |
-| **STT Client** | `backend/services/stt_client.py` | Async HTTP client calling external STT HTTPS API |
-| **LLM Client** | `backend/services/llm_client.py` | Async HTTP client calling external OpenAI-compatible Chat Completions HTTPS API |
-| **Audio Converter** | FFmpeg | WebM → WAV signal conversion (optional signal normalization) |
-| **Document Export** | python-docx | Styled DOCX document builder |
 
 ---
 
 ## 📂 Project Structure
 
 ```
-NoteCraft-Generator/
-├── extension-react/                 # Chrome Extension (React + Vite)
-│   ├── config.js                    # Configurable BACKEND_URL (http://localhost:8000 or Production)
-│   ├── public/manifest.json         # Manifest V3 configuration
-│   ├── src/                         # React UI & Floating widget
-│   ├── content.jsx                  # DOM scraping & speaker timeline tracking
-│   ├── background.js                # Chunk upload worker
-│   ├── offscreen.js                 # Audio loopback capture
-│   └── ready.html                   # Status & download page
-│
-├── backend/                         # CPU-only FastAPI Backend Application
-│   ├── main.py                      # FastAPI app factory, CORS, static outputs, endpoints
-│   ├── run.py                       # Local dev launcher (port 8000)
-│   ├── models.py                    # Pydantic data schemas
-│   ├── requirements.txt             # Backend Python dependencies (CPU-only)
-│   ├── .env.example                 # Environment configuration template
-│   ├── routers/
-│   │   ├── chunks.py                # POST /upload-chunk
-│   │   ├── finalize.py              # POST /finalize (MAP-REDUCE pipeline)
+NoteCraft_Generator/
+├── backend/                         # FastAPI Backend Application (Deployed on Render)
+│   ├── routers/                     # API Routers
+│   │   ├── chunks.py                # POST /upload-chunk (Audio chunk receiver)
+│   │   ├── finalize.py              # POST /finalize (MAP-REDUCE & Note pipeline)
 │   │   └── status.py                # GET /status, GET /download, GET /outputs
-│   ├── services/
-│   │   ├── stt_client.py            # External STT HTTP client (replacing local faster-whisper)
-│   │   ├── llm_client.py            # External LLM HTTP client (provider-agnostic)
-│   │   ├── whisper_stt.py           # Compatibility bridge to stt_client
-│   │   ├── speaker_map.py           # Speaker timeline mapper
-│   │   ├── export.py                # DOCX exporter
-│   │   └── metrics_logger.py        # Metrics evaluator
-│   └── session/
-│       └── store.py                 # In-memory session store
+│   ├── services/                    # Business Logic & Integrations
+│   │   ├── export.py                # DOCX document exporter
+│   │   ├── llm_client.py            # External LLM HTTP API client
+│   │   ├── metrics_logger.py        # Execution timing & compression metrics
+│   │   ├── speaker_map.py           # Speaker diarization & timeline mapping
+│   │   └── stt_client.py            # External Speech-to-Text HTTP API client
+│   ├── session/                     # Session Management
+│   │   └── store.py                 # In-memory session store & chunk buffer
+│   ├── models.py                    # Pydantic API data models
+│   ├── main.py                      # FastAPI app entrypoint & middleware
+│   ├── run.py                       # Local development server launcher
+│   ├── requirements.txt             # Python dependencies
+│   └── Dockerfile                   # Production Docker container setup
 │
-├── hf-backend/                      # Hugging Face Docker Space Files (CPU)
-│   ├── Dockerfile                   # CPU Docker container (Python 3.11 + FFmpeg)
-│   ├── app.py                       # Uvicorn entry point for HF Space (port 7860)
-│   ├── requirements.txt             # CPU dependencies
-│   └── README.md                    # Space metadata
+├── extension-react/                 # Chrome Extension Frontend (React 18 + Vite)
+│   ├── public/
+│   │   └── manifest.json            # Manifest V3 extension configuration
+│   ├── src/
+│   │   ├── components/              # React UI Components
+│   │   │   ├── HistoryList.jsx      # Note history list tab component
+│   │   │   ├── Login.jsx            # User login component
+│   │   │   ├── NoteDetail.jsx       # Detailed note preview component
+│   │   │   └── Signup.jsx           # User registration component
+│   │   ├── context/
+│   │   │   └── AuthContext.jsx      # Firebase Auth state provider
+│   │   ├── services/
+│   │   │   └── notesHistory.js      # Firestore Note History CRUD service
+│   │   ├── styles/
+│   │   │   └── global.css           # Styling rules
+│   │   ├── utils/
+│   │   │   └── authErrors.js        # Auth error message formatter
+│   │   ├── App.jsx                  # Main React application component
+│   │   ├── firebase.js              # Firebase SDK initialization
+│   │   └── main.jsx                 # React DOM root renderer
+│   ├── background.js                # MV3 Background Service Worker (API proxy)
+│   ├── config.js                    # Extension configuration (Backend URL)
+│   ├── content.jsx                  # Content script injected into meeting pages
+│   ├── offscreen.js                 # Audio recording offscreen document worker
+│   ├── offscreen.html               # Audio recording container
+│   ├── firestore.rules              # Firestore Security Rules definition
+│   ├── package.json                 # Frontend dependencies & build scripts
+│   └── vite.config.js               # Vite build configuration
 │
-├── llm-service/                     # [LEGACY / REFERENCE] Self-Hosted vLLM Service (Linux GPU only)
-├── modal/                           # [LEGACY / REFERENCE] Modal Deployment Scripts
-├── Dockerfile                       # Root CPU Dockerfile
-├── .gitignore
-└── Readme.md
+├── render.yaml                      # Render Blueprint deployment definition
+├── .gitignore                       # Git ignore rules
+└── Readme.md                        # Root project documentation
 ```
 
 ---
 
-## 💻 Local Development
+## 🛠️ Technology Stack
 
-### Prerequisites
+| Layer | Technology | Function |
+| :--- | :--- | :--- |
+| **Frontend** | React 18, Vite | Chrome Extension (Manifest V3) user interface |
+| **Icons & Styling** | Lucide React, Vanilla CSS | UI icons and custom responsive theme |
+| **Backend** | Python 3.11, FastAPI, Uvicorn | CPU-only REST API server |
+| **Database & Auth** | Firebase Auth, Firestore | User authentication and cloud note history |
+| **Hosting** | Render | Managed Cloud Backend Web Service |
+| **STT Engine** | External HTTPS API (Groq / Whisper) | Speech-to-Text audio transcription |
+| **LLM Engine** | External HTTPS API (Llama 3.1 8B / HF) | Intelligence summarization and note generation |
+| **Document Export** | `python-docx` | Formatted DOCX Word document synthesis |
 
-- **Python**: 3.11+
-- **Node.js**: 18+
-- **FFmpeg**: Installed and available in PATH
-- **No GPU, CUDA, vLLM, or local Whisper required!**
+---
 
-### 1️⃣ Configure Environment Variables
+## 🔄 How It Works
 
-```bash
-cd backend
-cp .env.example .env
+### Note Generation Flow
+
+```
+Google Meet Call / Webinar
+    │
+    ▼
+NoteCraft Chrome Extension
+    │
+    ├── Select Mode: [ MOM Mode ] or [ Class / Webinar Mode ]
+    │
+    ▼
+Record Audio (30-second chunking)
+    │
+    ▼
+FastAPI Backend (Render) ───► STT API (Audio → Text Transcripts)
+    │
+    ▼
+MAP-REDUCE Summarization ───► LLM API (Structured Note Generation)
+    │
+    ▼
+Export DOCX & Persist Note to Firebase Firestore
+    │
+    ▼
+Download Notes / View in "My Notes" History Tab
 ```
 
-Edit `backend/.env` with your external API credentials:
-```env
-# Application
-ALLOWED_ORIGINS=http://localhost:3000,*
+### Authentication Flow
 
-# STT API (External HTTPS Speech-to-Text API)
-STT_PROVIDER=huggingface
-STT_API_URL=https://router.huggingface.co/hf-inference/models/openai/whisper-large-v3-turbo
-STT_API_KEY=hf_xxxxxxxxxxxxxxxxxxxxxxxxx
-STT_MODEL=openai/whisper-large-v3-turbo
+```
+User
+ │
+ ├── Email/Password Login OR Google Sign-In
+ │
+ ▼
+Firebase Authentication (MoM Database)
+ │
+ ▼
+Authenticated Extension Context
+ │
+ ├── Full access to Floating Record Widget
+ └── Idempotent read/write access to user's Firestore Note History
+```
+
+---
+
+## ⚙️ Environment Variables
+
+### Frontend (`extension-react/.env`)
+
+Create `extension-react/.env` based on `extension-react/.env.example`. **Do not commit `.env` to Git.**
+
+```env
+VITE_FIREBASE_API_KEY=your_firebase_api_key
+VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your_project_id
+VITE_FIREBASE_STORAGE_BUCKET=your_project.firebasestorage.app
+VITE_FIREBASE_MESSAGING_SENDER_ID=your_messaging_sender_id
+VITE_FIREBASE_APP_ID=your_app_id
+```
+
+### Backend (`backend/.env`)
+
+Create `backend/.env` based on `backend/.env.example`.
+
+```env
+ALLOWED_ORIGINS=*
+
+STT_PROVIDER=groq
+STT_API_URL=https://api.groq.com/openai/v1/audio/transcriptions
+STT_API_KEY=your_stt_provider_api_key
+STT_MODEL=whisper-large-v3-turbo
 STT_TIMEOUT=120
 
-# LLM API (External HTTPS Chat Completions API)
 LLM_PROVIDER=huggingface
-LLM_API_URL=https://router.huggingface.co/hf-inference/v1/chat/completions
-LLM_API_KEY=hf_xxxxxxxxxxxxxxxxxxxxxxxxx
-LLM_MODEL=meta-llama/Llama-3.2-3B-Instruct
+LLM_API_URL=https://router.huggingface.co/v1/chat/completions
+LLM_API_KEY=your_llm_provider_api_key
+LLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
 LLM_TIMEOUT=300
 ```
 
-### 2️⃣ Run CPU Backend
+---
+
+## 💻 Local Setup & Development
+
+### Prerequisites
+- **Node.js**: v18+
+- **Python**: v3.11+
+- **Google Chrome**: Latest version
+
+### 1. Frontend Setup (Chrome Extension)
 
 ```bash
-cd backend
-pip install -r requirements.txt
-python run.py
-```
-
-Verify backend health:
-```bash
-curl http://localhost:8000/health
-# Output: {"status":"ok"}
-
-curl http://localhost:8000/config-status
-```
-
-### 3️⃣ Build & Load Chrome Extension
-
-```bash
+# Navigate to extension directory
 cd extension-react
+
+# Install dependencies
 npm install
+
+# Create local environment configuration
+cp .env.example .env
+
+# Fill in your Firebase configuration in .env, then build the extension
 npm run build
 ```
 
-Open Chrome → `chrome://extensions` → Enable **Developer Mode** → Click **Load Unpacked** → Select `extension-react/dist`.
-
----
-
-## 🐳 Docker Deployment
-
-Build and run the CPU backend locally via Docker:
+### 2. Backend Setup (FastAPI)
 
 ```bash
-# Build Docker image
-docker build -t notecraft-backend .
+# Navigate to backend directory
+cd backend
 
-# Run Docker container
-docker run -d -p 7860:7860 \
-  --env-file backend/.env \
-  --name notecraft-app notecraft-backend
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Create environment file
+cp .env.example .env
+
+# Fill in your STT & LLM API keys in .env, then start the server
+python run.py
+```
+The backend server starts locally on `http://127.0.0.1:8000`. Verify health at `http://127.0.0.1:8000/health`.
+
+### 3. Load Extension into Chrome
+
+1. Open Chrome and navigate to `chrome://extensions`.
+2. Toggle **Developer mode** in the top right corner.
+3. Click **Load unpacked**.
+4. Select the build output directory: `extension-react/dist`.
+
+---
+
+## ☁️ Backend Deployment (Render)
+
+The backend is configured for deployment on **Render** using the provided `render.yaml` blueprint:
+
+1. Connect your GitHub repository to [Render](https://render.com).
+2. Create a new **Web Service** pointing to the repository.
+3. Set Build Command: `pip install -r backend/requirements.txt`
+4. Set Start Command: `cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT`
+5. Add required environment variables (`STT_API_KEY`, `LLM_API_KEY`, etc.) in the Render Dashboard under **Environment**.
+6. Update `extension-react/config.js` with your production Render backend URL.
+
+---
+
+## 🔒 Security & Data Privacy
+
+- **User Data Isolation**: Firestore Security Rules strictly enforce that users can only read, write, create, or delete documents within their own UID path (`users/{userId}/notes/{noteId}`).
+- **Secret Management**: API keys (`STT_API_KEY`, `LLM_API_KEY`) reside exclusively on the backend server/Render environment variables and are **never exposed** to the client.
+- **Client Security**: Frontend configuration files use standard Vite environment variables for Firebase initialization.
+
+### Firestore Rules Summary (`extension-react/firestore.rules`)
+
+```javascript
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      match /notes/{noteId} {
+        allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
 ```
 
-Verify:
-```bash
-curl http://localhost:7860/health
-```
+---
+
+## 🧪 Testing & Verification
+
+The project undergoes regular verification:
+
+- **Frontend Bundle Verification**: Clean compilation via `npm run build` in `extension-react/`.
+- **Backend Syntax & Module Check**: Python syntax validation using `py_compile` across all backend modules.
+- **Authentication Manual Testing**: Email/Password and Google OAuth sign-in validation.
+- **Pipeline Testing**: End-to-end verification of MOM and Class/Webinar notes generation.
 
 ---
 
-## 🚀 Hugging Face CPU Deployment
+## 📈 Current Development Status
 
-Follow this step-by-step guide to deploy the NoteCraft-Generator backend to a Hugging Face CPU Docker Space:
-
-1. **Create a new Hugging Face Space**: Go to [Hugging Face Spaces](https://huggingface.co/spaces) and click **Create new Space**.
-2. **Choose Docker**: Select **Docker** as the Space SDK (Blank / Dockerfile).
-3. **Select CPU Hardware**: Choose **CPU basic** (free-compatible) hardware.
-4. **Push Deployment Files**: Clone the Space repository and push your NoteCraft code or connect your GitHub repository.
-5. **Open Space Settings**: In your Space dashboard, navigate to **Settings** → **Variables and secrets**.
-6. **Add Secrets and Variables**:
-   Add secrets:
-   - `STT_API_KEY`: Your Groq API Key (`gsk_...`)
-   - `LLM_API_KEY`: Your Hugging Face API Token (`hf_...`)
-   Add optional variables:
-   - `STT_PROVIDER`: `groq`
-   - `STT_API_URL`: `https://api.groq.com/openai/v1/audio/transcriptions`
-   - `STT_MODEL`: `whisper-large-v3-turbo`
-   - `LLM_PROVIDER`: `huggingface`
-   - `LLM_API_URL`: `https://router.huggingface.co/v1/chat/completions`
-   - `LLM_MODEL`: `meta-llama/Llama-3.1-8B-Instruct`
-   - `ALLOWED_ORIGINS`: `*` (or your Chrome extension ID)
-7. **Restart/Rebuild the Space**: Save settings and trigger a build. Wait until Space status becomes **Running**.
-8. **Open Health Endpoint**: Access `https://<YOUR_HF_SPACE_URL>/health` in your browser.
-9. **Confirm Health Status**: Verify the response is:
-   ```json
-   {"status":"ok"}
-   ```
-10. **Update Chrome Extension BACKEND_URL**: In `extension-react/config.js`, set:
-    ```javascript
-    export const BACKEND_URL = "https://<username>-<space-name>.hf.space";
-    ```
-11. **Build Extension**: Run `npm run build` in `extension-react/`.
-12. **Reload Extension**: Open `chrome://extensions` in Chrome, enable **Developer Mode**, and click **Reload** on NoteCraft AI.
-13. **Test Google Meet**: Open a Google Meet call (`https://meet.google.com/...`).
-14. **Record Short Meeting**: Click **Start Recording** on the NoteCraft floating widget and record spoken audio for 30–60 seconds.
-15. **Stop Recording**: Click **Stop & Generate Notes**.
-16. **Verify `/finalize`**: Extension sends session metadata and triggers background processing.
-17. **Verify `/status`**: Extension polls backend until status transitions to `"ready"`.
-18. **Download DOCX**: Click **Download DOCX** on the status page to inspect the generated report.
+- ✅ **Chrome Extension Interface**: React + Vite MV3 extension with floating action button and note history tabs.
+- ✅ **FastAPI CPU-Only Backend**: Active deployment pipeline running on Render.
+- ✅ **Dual Note Modes**: MOM Mode and Class / Webinar Notes Mode active.
+- ✅ **Firebase Auth Integration**: Email/Password and Google OAuth authentication live.
+- ✅ **Firestore Note History**: Idempotent cloud persistence and history view implemented.
+- 🚧 **Work in Progress**: Enhancing real-time transcript preview during active recording.
 
 ---
 
-> [!IMPORTANT]
-> **Production Deployment Notes & Constraints:**
-> - **Sleeping Spaces**: Free CPU Spaces on Hugging Face may enter sleep mode when inactive. The initial request after sleeping will wake the Space and may take slightly longer.
-> - **Ephemeral Storage**: In-memory sessions and locally stored DOCX files in `/app/backend/outputs` are not permanent across Space restarts or rebuilds.
-> - **API Quotas & Limits**: External Groq and Hugging Face API rate limits and token usage quotas apply.
-> - **Server-Side Key Security**: API keys (`STT_API_KEY`, `LLM_API_KEY`) remain strictly on the backend server/Space secrets and are NEVER sent to or visible inside the Chrome extension.
-> - **Shared Capacity**: Multiple NoteCraft users accessing the backend share the provider capacity and API keys configured on the backend server.
+## 📄 License
 
-
----
-
-## 🚀 Render Free Backend Deployment
-
-Follow this step-by-step guide to deploy the NoteCraft-Generator backend to Render using the Free Web Service tier:
-
-1. **Create/login to Render**: Go to [Render](https://render.com) and log in or create an account.
-2. **Create a new Web Service**: Click **New +** → **Web Service** (or Blueprints).
-3. **Connect the GitHub repository**: Grant Render access to your GitHub account.
-4. **Select the NoteCraft repository**: Choose `NoteCraft-Generator`.
-5. **Configure the service to use the backend application**: Set the Name to `notecraft-backend`, Environment to `Python 3`, and Region.
-6. **Set the build command**:
-   ```bash
-   pip install -r backend/requirements.txt
-   ```
-7. **Set the start command**:
-   ```bash
-   cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
-   ```
-8. **Select the Free plan**: Choose the **Free** instance type.
-9. **Add environment variables**:
-   Add the following Environment Variables in the Render Dashboard:
-   - `STT_PROVIDER`: `groq`
-   - `STT_API_URL`: `https://api.groq.com/openai/v1/audio/transcriptions`
-   - `STT_MODEL`: `whisper-large-v3-turbo`
-   - `STT_TIMEOUT`: `120`
-   - `LLM_PROVIDER`: `huggingface`
-   - `LLM_API_URL`: `https://router.huggingface.co/v1/chat/completions`
-   - `LLM_MODEL`: `meta-llama/Llama-3.1-8B-Instruct`
-   - `LLM_TIMEOUT`: `300`
-   - `ALLOWED_ORIGINS`: `*`
-10. **Add STT_API_KEY as a secret**: Set `STT_API_KEY` to your Groq API Key (`gsk_...`).
-11. **Add LLM_API_KEY as a secret**: Set `LLM_API_KEY` to your Hugging Face Token (`hf_...`).
-12. **Deploy**: Click **Create Web Service**.
-13. **Wait for the service to become Live**: Render will build the service and update the status to **Live**.
-14. **Open Health Endpoint**: Access `https://YOUR-SERVICE.onrender.com/health` in your browser.
-15. **Confirm Health Status**: Verify response:
-    ```json
-    {"status":"ok"}
-    ```
-16. **Update extension-react/config.js with the real Render URL**: Set:
-    ```javascript
-    export const BACKEND_URL = "https://YOUR-SERVICE.onrender.com";
-    ```
-17. **Run npm run build**: Run `npm run build` inside `extension-react/`.
-18. **Reload the extension in chrome://extensions**: Enable Developer Mode and click Reload.
-19. **Open Google Meet**: Navigate to a Google Meet session.
-20. **Test a short recording**: Click **Start Recording** on the NoteCraft floating widget and record spoken audio for 30–60 seconds.
-21. **Verify upload**: Confirm chunk uploads complete.
-22. **Verify finalize**: Click **Stop & Generate Notes**.
-23. **Verify status becomes ready**: Extension polls `/status` until completed.
-24. **Download DOCX**: Click **Download DOCX** on the status page.
-
----
-
-> [!IMPORTANT]
-> **Render Free Tier Limitations:**
-> - **Spin Down / Inactivity Sleep**: Free Render Web Services automatically spin down after 15 minutes of inactivity. The first incoming request after sleep will wake the service and may take 30–50 seconds.
-> - **Resource Constraints**: Free Web Services have limited CPU and RAM (512 MB).
-> - **Ephemeral Filesystem**: Render Free filesystems are non-persistent. Local files stored in `/app/backend/outputs` and in-memory session states are cleared whenever the service restarts, spins down, or redeploys.
-> - **Concurrency Limits**: Free CPU instances are optimized for lightweight single-session/MVP usage.
-> - **External API Limits**: Groq and Hugging Face API rate limits and token quotas apply independently of Render's platform constraints.
-
-
-## 🛡️ Secret Management & Security
-
-- **Environment-Variable Secrets**: `STT_API_KEY` and `LLM_API_KEY` are read exclusively from environment variables or platform secrets.
-- **Zero Log Leaks**: Secrets are never output to logs, `/health`, `/config-status`, or client responses.
-- **Fast Healthchecks**: `GET /health` returns `{"status": "ok"}` instantly without triggering external API calls.
-
----
-
-## ⚠️ API Pricing, Quotas & Error Handling
-
-- **External Provider Limits**: External STT and LLM providers may enforce free tier quotas, rate limits (HTTP 429), or require paid API credits. NoteCraft does not claim any third-party API is permanently free.
-- **Robust Error Recovery**:
-  - HTTP 401 / 403 / 429 / 500 responses and connection timeouts are caught gracefully.
-  - Individual chunk STT failures mark the chunk as failed while allowing the meeting pipeline to proceed.
-  - LLM JSON generation includes automatic retries and structural fallback templates if parsing fails.
-
----
-
-## 🏛️ Legacy & Reference Code
-
-- **`modal/`**: Contains legacy Modal Cloud serverless GPU scripts for reference. Not required for production.
-- **`llm-service/`**: Contains legacy self-hosted vLLM inference server for Linux GPU machines. Not required for production.
+This project is open-source and available under the [MIT License](LICENSE).
