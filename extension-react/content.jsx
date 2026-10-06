@@ -241,16 +241,18 @@ import { BACKEND_URL } from './config.js';
         }
 
         const data = response.data;
-        if (data.status === 'ready') {
+        if (data.status === 'ready' || data.status === 'ready_with_warnings') {
           clearInterval(pollId);
           chrome.storage.local.set({ 
             currentState: 'ready',
-            generatedNotes: data.notes_data || null
+            generatedNotes: data.notes_data || null,
+            warnings: data.warnings || []
           });
         } else if (data.status === 'failed') {
           clearInterval(pollId);
-          alert("NoteCraft Backend failed to process the meeting.");
-          chrome.storage.local.set({ currentState: 'idle' });
+          const errMsg = data.message || "NoteCraft Backend failed to process the meeting.";
+          alert(`NoteCraft Backend failed: ${errMsg}`);
+          chrome.storage.local.set({ currentState: 'idle', errorMessage: errMsg });
         }
 
         failCount = 0;

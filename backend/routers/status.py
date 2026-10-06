@@ -193,6 +193,12 @@ async def get_status(session_id: str):
     return StatusResponse(
         session_id=session_id,
         status=session.get("status", "processing"),
+        stage=session.get("stage", "pending"),
+        provider=session.get("provider"),
+        error_code=session.get("error_code"),
+        message=session.get("message"),
+        retryable=session.get("retryable"),
+        warnings=session.get("warnings", []),
         pdf_url=session.get("pdf_url"),
         docx_url=session.get("docx_url"),
         notes_data=session.get("mom_json"),

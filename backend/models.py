@@ -63,6 +63,12 @@ class FinalizeRequest(BaseModel):
 class StatusResponse(BaseModel):
     session_id: str
     status:     str
+    stage:      Optional[str] = None
+    provider:   Optional[str] = None
+    error_code: Optional[str] = None
+    message:    Optional[str] = None
+    retryable:  Optional[bool] = None
+    warnings:   List[str] = []
     pdf_url:    Optional[str] = None
     docx_url:   Optional[str] = None
     notes_data: Optional[dict] = None
@@ -70,10 +76,14 @@ class StatusResponse(BaseModel):
 
 # ── Internal chunk data ────────────────────────────────────────
 class ChunkData(BaseModel):
-    raw:     str = ""
-    clean:   str = ""
-    summary: str = ""
-    status:  str = "pending"
+    raw:           str = ""
+    clean:         str = ""
+    summary:       str = ""
+    status:        str = "pending"
+    error_code:    Optional[str] = None
+    error_message: Optional[str] = None
+    retryable:     Optional[bool] = None
+    attempts:      int = 0
 
 
 # ── MoM Category Discussion ─────────────────────────────────────
@@ -114,4 +124,4 @@ class StandardMoMOutput(BaseModel):
     signature_date:      Optional[str] = None
 
     # Legacy fields mapping compatibility
-    categories:          Optional[List[dict]] = None
+    categories:          Optional[List[dict]] = None

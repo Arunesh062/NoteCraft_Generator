@@ -1,11 +1,12 @@
 import os
 import json
 import httpx
-from dotenv import load_dotenv
 import time
-from services import metrics_logger
+from typing import Optional, Dict, Any, List
+from dotenv import load_dotenv
 
-load_dotenv()
+from services import metrics_logger
+from services.retry import execute_with_retry, LLMError, ProviderError
 
 load_dotenv()
 
@@ -15,29 +16,47 @@ LLM_API_KEY  = (os.getenv("LLM_API_KEY") or os.getenv("HF_TOKEN") or "").strip()
 MODEL        = os.getenv("LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct").strip()
 LLM_TIMEOUT  = float(os.getenv("LLM_TIMEOUT", "300.0"))
 
-# ── Base LLM caller ────────────────────────────────────────────
-async def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 2000, json_mode: bool = False, session_id: str = None) -> str:
-    try:
+
+async def _call_llm(
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int = 2000,
+    json_mode: bool = False,
+    session_id: Optional[str] = None,
+    operation: str = "llm_completion",
+) -> str:
+    """
+    Calls external LLM (Hugging Face / OpenAI) with retry and error handling.
+    """
+    if not LLM_API_KEY:
+        raise LLMError(
+            message="AI generation configuration error. LLM API key is missing.",
+            error_code="AUTH_FAILURE",
+            status_code=401,
+            retryable=False,
+            session_id=session_id,
+        )
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LLM_API_KEY}",
+    }
+
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_prompt},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    async def _single_llm_call() -> str:
         start_time = time.time()
-        headers = {
-            "Content-Type": "application/json",
-        }
-        if LLM_API_KEY:
-            headers["Authorization"] = f"Bearer {LLM_API_KEY}"
-
         async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
-            payload = {
-                "model":       MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": user_prompt},
-                ],
-                "max_tokens":  max_tokens,
-                "temperature": 0.3,
-            }
-            if json_mode:
-                payload["response_format"] = {"type": "json_object"}
-
             response = await client.post(
                 LLM_API_URL,
                 headers=headers,
@@ -45,41 +64,111 @@ async def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 2000
             )
 
         latency = time.time() - start_time
-        if response.status_code != 200:
-            print(f"LLM error: {response.status_code} {response.text[:300]}")
-            return ""
+        status_code = response.status_code
 
-        result  = response.json()
+        if status_code != 200:
+            err_text = response.text[:400]
+            if status_code == 402:
+                # Immediate non-retryable failure for credit depletion
+                raise LLMError(
+                    message="AI generation is temporarily unavailable because the LLM provider credits are exhausted.",
+                    error_code="LLM_CREDITS_EXHAUSTED",
+                    status_code=402,
+                    retryable=False,
+                    session_id=session_id,
+                )
+            elif status_code == 401:
+                raise LLMError(
+                    message="AI generation configuration error. Please contact the administrator.",
+                    error_code="AUTH_FAILURE",
+                    status_code=401,
+                    retryable=False,
+                    session_id=session_id,
+                )
+            elif status_code == 403:
+                raise LLMError(
+                    message="AI generation access forbidden. Please contact the administrator.",
+                    error_code="FORBIDDEN",
+                    status_code=403,
+                    retryable=False,
+                    session_id=session_id,
+                )
+            elif status_code == 400:
+                raise LLMError(
+                    message="Invalid request sent to AI generation provider.",
+                    error_code="MALFORMED_REQUEST",
+                    status_code=400,
+                    retryable=False,
+                    session_id=session_id,
+                )
+            elif status_code == 429:
+                # Check for Retry-After header
+                headers_map = getattr(response, "headers", {})
+                raise LLMError(
+                    message="AI generation service is temporarily busy. Please try again.",
+                    error_code="RATE_LIMIT",
+                    status_code=429,
+                    retryable=True,
+                    session_id=session_id,
+                )
+            elif status_code in (408, 500, 502, 503, 504):
+                raise LLMError(
+                    message=f"AI generation service temporary error (HTTP {status_code}).",
+                    error_code="SERVER_ERROR",
+                    status_code=status_code,
+                    retryable=True,
+                    session_id=session_id,
+                )
+            else:
+                raise LLMError(
+                    message=f"LLM API request failed with status {status_code}: {err_text}",
+                    error_code="API_ERROR",
+                    status_code=status_code,
+                    retryable=False,
+                    session_id=session_id,
+                )
+
+        result = response.json()
         content = ""
 
-        # OpenAI Chat Completions standard format
         if isinstance(result, dict) and "choices" in result and len(result["choices"]) > 0:
             content = result["choices"][0].get("message", {}).get("content", "")
-        # Hugging Face direct inference format fallback
         elif isinstance(result, list) and len(result) > 0:
             content = result[0].get("generated_text", "")
         elif isinstance(result, dict) and "generated_text" in result:
             content = result["generated_text"]
 
-        # Log metrics if tracking session
-        if session_id and content:
+        content_clean = content.strip()
+        if not content_clean:
+            raise LLMError(
+                message="LLM API returned an empty response.",
+                error_code="EMPTY_RESPONSE",
+                status_code=200,
+                retryable=True,
+                session_id=session_id,
+            )
+
+        if session_id:
             usage = result.get("usage", {}) if isinstance(result, dict) else {}
             completion_tokens = usage.get("completion_tokens", 0)
             if completion_tokens == 0:
-                completion_tokens = len(content.split()) * 1.3
+                completion_tokens = len(content_clean.split()) * 1.3
             metrics_logger.log_llm_call(session_id, latency, int(completion_tokens))
-            
-        return content.strip()
 
-    except httpx.TimeoutException:
-        print(f"LLM request timed out after {LLM_TIMEOUT}s")
-        return ""
-    except Exception as e:
-        print(f"LLM unexpected error: {e}")
-        return ""
+        return content_clean
+
+    return await execute_with_retry(
+        func=_single_llm_call,
+        provider="huggingface",
+        operation=operation,
+        session_id=session_id,
+        max_attempts=3,
+        initial_delay=2.0,
+        backoff_factor=2.5,
+        max_delay=15.0,
+    )
 
 
-# ── Parse JSON safely ──────────────────────────────────────────
 def _parse_json(raw: str) -> dict | None:
     if not raw:
         return None
@@ -93,7 +182,7 @@ def _parse_json(raw: str) -> dict | None:
     except ValueError:
         return None
 
-    # Handle unescaped control characters (newlines, tabs) inside string literals inline
+    # Handle unescaped control characters inside string literals inline
     result = []
     in_string = False
     escape = False
@@ -117,24 +206,24 @@ def _parse_json(raw: str) -> dict | None:
                 result.append(char)
     json_content = "".join(result)
 
-    # Try parsing standard JSON
     try:
         return json.loads(json_content)
     except json.JSONDecodeError:
         pass
 
-    # Try removing trailing commas before closing braces/brackets
     import re
     json_content_cleaned = re.sub(r',\s*([\]}])', r'\1', json_content)
     try:
         return json.loads(json_content_cleaned)
     except Exception as e:
-        print(f"JSON Parsing fully failed: {e}")
+        print(f"[LLM] JSON Parsing failed: {e}")
         return None
 
 
-# ── JOB 1: Clean transcript ────────────────────────────────────
-async def clean_transcript(raw_transcript: str, session_id: str = None) -> str:
+async def clean_transcript(raw_transcript: str, session_id: Optional[str] = None) -> str:
+    if not raw_transcript or not raw_transcript.strip():
+        return raw_transcript
+
     system = (
         "You are a transcript editor. "
         "Clean the given transcript by removing filler words (uh, um, hmm, like), "
@@ -142,17 +231,20 @@ async def clean_transcript(raw_transcript: str, session_id: str = None) -> str:
         "Do not summarise — preserve all content and meaning. "
         "Return only the cleaned transcript text, nothing else."
     )
-    user    = f"Clean this transcript:\n\n{raw_transcript}"
-    cleaned = await _call_llm(system, user, session_id=session_id)
-    return cleaned if cleaned else raw_transcript
+    user = f"Clean this transcript:\n\n{raw_transcript}"
+    try:
+        cleaned = await _call_llm(system, user, session_id=session_id, operation="clean_transcript")
+        return cleaned if cleaned else raw_transcript
+    except LLMError as e:
+        print(f"[LLM] clean_transcript failed ({e.error_code}): using raw transcript")
+        return raw_transcript
 
 
-# ── JOB 2: Segment summary ─────────────────────────────────────
 async def summarise_chunk(
-    clean_transcript: str,
-    prev_summary:     str = "",
-    chunk_index:      int = 0,
-    session_id:       str = None
+    clean_transcript_text: str,
+    prev_summary: str = "",
+    chunk_index: int = 0,
+    session_id: Optional[str] = None
 ) -> str:
     system = (
         "You are a class note taker. "
@@ -164,12 +256,11 @@ async def summarise_chunk(
         f"Context from previous segment:\n{prev_summary}\n\n"
         if prev_summary and chunk_index > 0 else ""
     )
-    user = f"{context}Summarise this class segment (segment {chunk_index + 1}):\n\n{clean_transcript}"
-    return await _call_llm(system, user, session_id=session_id)
+    user = f"{context}Summarise this class segment (segment {chunk_index + 1}):\n\n{clean_transcript_text}"
+    return await _call_llm(system, user, session_id=session_id, operation="summarise_chunk")
 
 
-# ── JOB 3a: Block aggregation ──────────────────────────────────
-async def aggregate_block(chunk_summaries: list, block_index: int, session_id: str = None) -> str:
+async def aggregate_block(chunk_summaries: list, block_index: int, session_id: Optional[str] = None) -> str:
     system = (
         "You are a class note taker. "
         "You are given several segment summaries from an online class. "
@@ -179,22 +270,18 @@ async def aggregate_block(chunk_summaries: list, block_index: int, session_id: s
     )
     summaries_text = "\n\n".join([f"Segment {i+1}:\n{s}" for i, s in enumerate(chunk_summaries)])
     user = f"Merge these summaries into one block summary:\n\n{summaries_text}"
-    return await _call_llm(system, user, session_id=session_id)
+    return await _call_llm(system, user, session_id=session_id, operation="block_summary")
 
 
-# ── JOB 3b: Generate Notes (MoM or Class Notes) ───────────────
 async def generate_notes(
     block_summaries:  list,
     participants:     list,
     meeting_date:     str,
     duration_minutes: str = "Unknown",
     mode:             str = "mom",
-    session_id:       str = None,
+    session_id:       Optional[str] = None,
     max_retries:      int = 3
 ) -> dict:
-    """
-    Main entry point to generate notes based on the selected mode ('mom' or 'class_notes').
-    """
     if mode == "class_notes":
         return await generate_class_notes(
             block_summaries=block_summaries,
@@ -220,7 +307,7 @@ async def generate_mom(
     participants:     list,
     meeting_date:     str,
     duration_minutes: str = "Unknown",
-    session_id:       str = None,
+    session_id:       Optional[str] = None,
     max_retries:      int = 3
 ) -> dict:
 
@@ -272,28 +359,42 @@ async def generate_mom(
         f"Generate the Minutes of Meeting JSON now following the exact schema required."
     )
 
+    last_error = None
     for attempt in range(max_retries):
         if session_id:
             metrics_logger.log_json_attempt(session_id, success=False)
             
-        print(f"Generating MoM (Attempt {attempt + 1})...")
-        response = await _call_llm(system, user, max_tokens=4000, json_mode=True, session_id=session_id)
-        
-        parsed = _parse_json(response)
-        if parsed:
-            if session_id:
-                metrics_logger.session_metrics[session_id]["json_successes"] += 1
-            parsed["document_type"] = "mom"
-            if not parsed.get("date"):
-                parsed["date"] = meeting_date
-            if not parsed.get("venue_platform"):
-                parsed["venue_platform"] = "Google Meet"
-            if not parsed.get("members_present") and participants:
-                parsed["members_present"] = participants
-            return parsed
+        print(f"[LLM] Generating MoM (Attempt {attempt + 1}/{max_retries})...")
+        try:
+            response = await _call_llm(system, user, max_tokens=4000, json_mode=True, session_id=session_id, operation="final_generation")
+            parsed = _parse_json(response)
+            if parsed and isinstance(parsed, dict):
+                if session_id:
+                    metrics_logger.session_metrics[session_id]["json_successes"] += 1
+                parsed["document_type"] = "mom"
+                if not parsed.get("date"):
+                    parsed["date"] = meeting_date
+                if not parsed.get("venue_platform"):
+                    parsed["venue_platform"] = "Google Meet"
+                if not parsed.get("members_present") and participants:
+                    parsed["members_present"] = participants
+                return parsed
+            else:
+                print(f"[LLM] MoM generation attempt {attempt + 1}: JSON parsing failed")
+        except LLMError as e:
+            last_error = e
+            if not e.retryable:
+                raise e
 
-    print("Failed to parse MoM JSON — using fallback template")
-    return _fallback_notes(participants, meeting_date)
+    if last_error:
+        raise last_error
+    raise LLMError(
+        message="Failed to generate valid Minutes of Meeting JSON from LLM after retries.",
+        error_code="INVALID_LLM_RESPONSE",
+        status_code=200,
+        retryable=False,
+        session_id=session_id,
+    )
 
 
 async def generate_class_notes(
@@ -301,7 +402,7 @@ async def generate_class_notes(
     participants:     list,
     meeting_date:     str,
     duration_minutes: str = "Unknown",
-    session_id:       str = None,
+    session_id:       Optional[str] = None,
     max_retries:      int = 3
 ) -> dict:
 
@@ -371,35 +472,45 @@ async def generate_class_notes(
         f"Generate the Class / Webinar Notes JSON now following the exact schema required."
     )
 
+    last_error = None
     for attempt in range(max_retries):
         if session_id:
             metrics_logger.log_json_attempt(session_id, success=False)
 
-        print(f"Generating Class Notes (Attempt {attempt + 1})...")
-        response = await _call_llm(system, user, max_tokens=4000, json_mode=True, session_id=session_id)
+        print(f"[LLM] Generating Class Notes (Attempt {attempt + 1}/{max_retries})...")
+        try:
+            response = await _call_llm(system, user, max_tokens=4000, json_mode=True, session_id=session_id, operation="final_generation")
+            parsed = _parse_json(response)
+            if parsed and isinstance(parsed, dict):
+                if session_id:
+                    metrics_logger.session_metrics[session_id]["json_successes"] += 1
+                parsed["document_type"] = "class_notes"
+                if not parsed.get("date"):
+                    parsed["date"] = meeting_date
+                return parsed
+            else:
+                print(f"[LLM] Class Notes generation attempt {attempt + 1}: JSON parsing failed")
+        except LLMError as e:
+            last_error = e
+            if not e.retryable:
+                raise e
 
-        parsed = _parse_json(response)
-        if parsed:
-            if session_id:
-                metrics_logger.session_metrics[session_id]["json_successes"] += 1
-            parsed["document_type"] = "class_notes"
-            if not parsed.get("date"):
-                parsed["date"] = meeting_date
-            return parsed
-
-    print("Failed to parse Class Notes JSON — using fallback template")
-    return _fallback_class_notes(participants, meeting_date)
+    if last_error:
+        raise last_error
+    raise LLMError(
+        message="Failed to generate valid Class Notes JSON from LLM after retries.",
+        error_code="INVALID_LLM_RESPONSE",
+        status_code=200,
+        retryable=False,
+        session_id=session_id,
+    )
 
 
-# ── JOB 4: Refinement Pass ──────────────────────────────────────
-async def refine_notes(draft_json: dict, session_id: str = None, max_retries: int = 3) -> dict:
-    """
-    Refines either MOM or Class Notes draft JSON.
-    """
-    return await refine_mom(draft_json, session_id=session_id, max_retries=max_retries)
+async def refine_notes(draft_json: dict, session_id: Optional[str] = None, max_retries: int = 3) -> dict:
+    return await refine_mom(draft_json, max_retries=max_retries, session_id=session_id)
 
 
-async def refine_mom(draft_json: dict, max_retries: int = 3, session_id: str = None) -> dict:
+async def refine_mom(draft_json: dict, max_retries: int = 3, session_id: Optional[str] = None) -> dict:
     system = (
         "You are a professional Document Editor. "
         "Refine and improve the given JSON Document (which is either Minutes of Meeting or Class/Webinar Notes). "
@@ -408,85 +519,30 @@ async def refine_mom(draft_json: dict, max_retries: int = 3, session_id: str = N
     )
     user = f"Refine this JSON:\n\n{json.dumps(draft_json, indent=2)}"
 
+    last_error = None
     for attempt in range(max_retries):
         if session_id:
             metrics_logger.log_json_attempt(session_id, success=False)
             
-        print(f"Refining Notes (Attempt {attempt + 1})...")
-        response = await _call_llm(system, user, max_tokens=4000, json_mode=True, session_id=session_id)
-        
-        parsed = _parse_json(response)
-        if parsed:
-            if session_id:
-                metrics_logger.session_metrics[session_id]["json_successes"] += 1
-            return parsed
+        print(f"[LLM] Refining Notes (Attempt {attempt + 1}/{max_retries})...")
+        try:
+            response = await _call_llm(system, user, max_tokens=4000, json_mode=True, session_id=session_id, operation="final_refinement")
+            parsed = _parse_json(response)
+            if parsed and isinstance(parsed, dict):
+                if session_id:
+                    metrics_logger.session_metrics[session_id]["json_successes"] += 1
+                return parsed
+        except LLMError as e:
+            last_error = e
+            if not e.retryable:
+                raise e
 
-    print("Failed to refine JSON — returning unrefined draft")
-    return draft_json
-
-
-# ── Fallback ───────────────────────────────────────────────────
-def _fallback_notes(participants: list, date: str) -> dict:
-    return {
-        "document_type":       "mom",
-        "session_title":       "Minutes of the Meeting",
-        "meeting_no":          f"{date[:7]}/01" if date else "2026-07/01",
-        "date":                date,
-        "time":                "Scheduled Session",
-        "venue_platform":      "Google Meet",
-        "members_present":     participants if participants else ["Attendees"],
-        "points_discussed": [
-            {
-                "category_name": "General Discussion",
-                "points": ["The team conducted a meeting review. Please refer to recording for complete transcript."]
-            }
-        ],
-        "responsibility_matrix": [
-            {
-                "category_name": "General Discussion",
-                "responsibility": "All Members",
-                "target_date": "Continuous"
-            }
-        ],
-        "information_items": [
-            "Session recorded and archived automatically.",
-            "Further details will be circulated in due course."
-        ],
-        "copy_to":             ["All Meeting Attendees"],
-        "copy_submitted_to":   ["Management / Department Head"],
-        "signatory_name":      "Meeting Secretary",
-        "signatory_designation": "Convener",
-        "signature_date":      date,
-    }
-
-
-def _fallback_class_notes(participants: list, date: str) -> dict:
-    speaker = participants[0] if participants else "Instructor / Speaker"
-    return {
-        "document_type": "class_notes",
-        "session_title": "Class / Webinar Notes",
-        "date": date,
-        "speaker_instructor": speaker,
-        "session_type": "Class / Webinar",
-        "overview": "The class/webinar session was conducted. Please refer to recording for full transcript.",
-        "topics_covered": ["General Session Topics"],
-        "detailed_notes": [
-            {
-                "topic_title": "General Discussion",
-                "explanation": "Detailed explanation of session topics.",
-                "key_points": ["Session content review."]
-            }
-        ],
-        "important_concepts": [
-            {
-                "term_or_concept": "Key Concept",
-                "definition_or_explanation": "Core concepts covered during presentation."
-            }
-        ],
-        "examples_demonstrations": [],
-        "code_technical_examples": [],
-        "questions_and_answers": [],
-        "practical_tips": ["Review lecture material and practice exercises."],
-        "key_takeaways": ["Completed live session."],
-        "final_summary": "Session notes generated."
-    }
+    if last_error:
+        raise last_error
+    raise LLMError(
+        message="Failed to refine JSON output after retries.",
+        error_code="REFINEMENT_FAILED",
+        status_code=200,
+        retryable=True,
+        session_id=session_id,
+    )

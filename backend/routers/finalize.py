@@ -5,6 +5,7 @@ from models import FinalizeRequest
 from session.store import (
     get_session,
     get_all_chunks,
+    get_audio_chunk,
     create_session,
     get_failed_chunks,
     save_chunk,
@@ -12,24 +13,24 @@ from session.store import (
     save_mom,
     save_urls,
     set_status,
+    set_session_status,
 )
 from services.stt_client import transcribe_chunk
 from services.llm_client import (
     clean_transcript,
     summarise_chunk,
     aggregate_block,
-    generate_mom,
     generate_notes,
-    refine_mom,
     refine_notes,
 )
+from services.retry import ProviderError, STTError, LLMError
 from services.speaker_map import assign_speakers
 from services.export import export_documents
 from services import metrics_logger
 
 router = APIRouter()
 
-CHUNK_GROUP_SIZE = 5  # number of chunk summaries per block
+CHUNK_GROUP_SIZE = 5
 
 
 # ── POST /finalize ─────────────────────────────────────────────
@@ -37,7 +38,7 @@ CHUNK_GROUP_SIZE = 5  # number of chunk summaries per block
 async def finalize(request: FinalizeRequest):
     """
     Triggered when user clicks End Meeting.
-    Runs full pipeline in background and returns immediately.
+    Runs full pipeline in background and returns status immediately.
     """
     session_id = request.session_id
     mode       = request.mode or "mom"
@@ -50,8 +51,6 @@ async def finalize(request: FinalizeRequest):
 
     session = get_session(session_id)
 
-    # ── Auto-create session if it doesn't exist ──────────────
-    # This handles direct API testing without prior chunk uploads
     if not session:
         create_session(session_id, request.participants, [
             e.dict() for e in request.speaker_timeline
@@ -60,7 +59,6 @@ async def finalize(request: FinalizeRequest):
     else:
         session["mode"] = mode
 
-    # ── Update speaker timeline and participants ────────────────
     if request.speaker_timeline:
         session["speaker_timeline"] = [
             e.dict() for e in request.speaker_timeline
@@ -68,8 +66,7 @@ async def finalize(request: FinalizeRequest):
     if request.participants:
         session["participants"] = request.participants
 
-    # Set status to processing and run pipeline in background
-    set_status(session_id, "processing")
+    set_session_status(session_id, status="processing", stage="starting")
     asyncio.create_task(run_pipeline(session_id))
 
     return {"message": "Finalization started", "session_id": session_id}
@@ -78,53 +75,77 @@ async def finalize(request: FinalizeRequest):
 # ── Full pipeline ──────────────────────────────────────────────
 async def run_pipeline(session_id: str):
     """
-    Runs the complete pipeline after End Meeting:
-        1. Retry failed chunks
+    Executes NoteCraft finalization pipeline:
+        1. Retry failed STT chunks
         2. Speaker mapping
         3. MAP-REDUCE aggregation
         4. Final Notes generation
-        5. Refinement pass
+        5. Refinement pass with controlled fallback
         6. Export PDF + DOCX
     """
     try:
         session = get_session(session_id)
-        mode    = session.get("mode", "mom") if session else "mom"
+        if not session:
+            print(f"[FINALIZE] Session {session_id} not found")
+            return
+        mode = session.get("mode", "mom")
 
         # ── Step 1: Retry failed chunks ────────────────────────
+        set_session_status(session_id, status="processing", stage="stt")
         failed = get_failed_chunks(session_id)
         if failed:
-            print(f"Retrying {len(failed)} failed chunks...")
+            print(f"[FINALIZE] Retrying {len(failed)} failed chunks for session {session_id}...")
             await _retry_failed_chunks(session_id, failed)
 
-        # ── Step 2: Speaker mapping ────────────────────────────
-        print("Running speaker mapping...")
+        # Re-check chunks after retries
         chunks = get_all_chunks(session_id)
+        failed_chunks = [c for c in chunks if c.get("status") not in ("STT_COMPLETED", "ok")]
+
+        if failed_chunks or not chunks:
+            failed_chunk = failed_chunks[0] if failed_chunks else {}
+            chunk_idx = failed_chunk.get("chunk_index", 0)
+            err_code = failed_chunk.get("error_code", "STT_FAILED")
+            err_msg = failed_chunk.get("error_message") or f"Audio processing failed for chunk {chunk_idx}. Please retry the recording."
+            retryable = failed_chunk.get("retryable", False)
+
+            print(f"[FINALIZE] Atomic Pipeline HALT: Chunk {chunk_idx} failed permanently ({err_code}: {err_msg})")
+            set_session_status(
+                session_id=session_id,
+                status="failed",
+                stage="stt",
+                provider="groq",
+                error_code=err_code,
+                message=err_msg,
+                retryable=retryable,
+            )
+            metrics_logger.finalize_metrics(session_id, status="failed")
+            return
+
+        # ── Step 2: Speaker mapping ────────────────────────────
+        set_session_status(session_id, status="processing", stage="speaker_mapping")
+        print(f"[FINALIZE] Running speaker mapping for session {session_id}...")
         speaker_timeline = session.get("speaker_timeline", [])
         tagged_transcript = assign_speakers(chunks, speaker_timeline)
 
         # ── Step 3: MAP-REDUCE — group chunks into blocks ──────
-        print("Running MAP-REDUCE aggregation...")
+        set_session_status(session_id, status="processing", stage="block_summary", provider="huggingface")
+        print(f"[FINALIZE] Running MAP-REDUCE aggregation for session {session_id}...")
         block_summaries = await _aggregate_blocks(session_id, chunks)
         save_block_summaries(session_id, block_summaries)
 
         # ── Step 4: Generate final Notes JSON ──────────────────
-        print(f"Generating final Notes (mode={mode})...")
+        set_session_status(session_id, status="processing", stage="final_generation", provider="huggingface")
+        print(f"[FINALIZE] Generating final Notes (mode={mode}) for session {session_id}...")
         participants = session.get("participants", [])
         meeting_date = datetime.now().strftime("%Y-%m-%d")
 
-        # Calculate duration based on the last event in the timeline
         speaker_timeline = session.get("speaker_timeline", [])
         duration_minutes = "Unknown"
-        
-        # We need `chunks` to calculate fallback duration
-        chunks = get_all_chunks(session_id)
-        
         if speaker_timeline:
             last_timestamp = speaker_timeline[-1].get("timestamp_ms", 0)
             mins = round(last_timestamp / (1000 * 60))
             duration_minutes = str(mins) if mins > 0 else "< 1"
         elif chunks:
-            # Fallback: each chunk is roughly 30 seconds
             mins = round((len(chunks) * 30) / 60)
             duration_minutes = str(mins) if mins > 0 else "< 1"
 
@@ -138,54 +159,96 @@ async def run_pipeline(session_id: str):
         )
 
         # ── Step 5: Refinement pass ────────────────────────────
-        print(f"Refining Notes (mode={mode})...")
-        final_json = await refine_notes(notes_json, session_id=session_id)
+        set_session_status(session_id, status="processing", stage="final_refinement", provider="huggingface")
+        print(f"[FINALIZE] Refining Notes (mode={mode}) for session {session_id}...")
+        
+        final_json = notes_json
+        warnings = []
+        try:
+            refined_json = await refine_notes(notes_json, session_id=session_id)
+            if refined_json and isinstance(refined_json, dict):
+                final_json = refined_json
+        except (LLMError, ProviderError) as e:
+            print(f"[FINALIZE] Refinement pass failed ({e.error_code}): {e.message}")
+            if notes_json and isinstance(notes_json, dict):
+                print(f"[FINALIZE] Controlled Fallback: Using valid previous notes JSON.")
+                final_json = notes_json
+                warnings.append("Final refinement was unavailable; previous valid MoM was used.")
+            else:
+                raise e
+
         save_mom(session_id, final_json)
 
-        # ── Step 6: Document generation ────────────────────────
-        print("Exporting Document...")
+        # ── Step 6: Document export ────────────────────────────
+        set_session_status(session_id, status="processing", stage="export")
+        print(f"[FINALIZE] Exporting document for session {session_id}...")
         pdf_url, docx_url = export_documents(final_json, session_id)
         save_urls(session_id, pdf_url, docx_url)
 
-        # ── Metrics: Compression Ratio & Finalize ───────────────
+        # Metrics
         raw_len = sum(len(c.get("raw", "")) for c in chunks)
         final_len = len(str(final_json))
         metrics_logger.set_compression_stats(session_id, raw_len, final_len)
         metrics_logger.finalize_metrics(session_id, status="completed")
 
-        set_status(session_id, "ready")
-        print(f"Pipeline complete for session {session_id}")
+        if warnings:
+            set_session_status(
+                session_id=session_id,
+                status="ready_with_warnings",
+                stage="complete",
+                warnings=warnings,
+            )
+            print(f"[FINALIZE] Session {session_id} READY WITH WARNINGS: {warnings}")
+        else:
+            set_session_status(
+                session_id=session_id,
+                status="ready",
+                stage="complete",
+                warnings=[],
+            )
+            print(f"[FINALIZE] Session {session_id} READY")
+
+    except ProviderError as e:
+        print(f"[FINALIZE] Pipeline FAILED for session {session_id} ({e.error_code}): {e.message}")
+        metrics_logger.finalize_metrics(session_id, status="failed")
+        set_session_status(
+            session_id=session_id,
+            status="failed",
+            stage=e.operation,
+            provider=e.provider,
+            error_code=e.error_code,
+            message=e.message,
+            retryable=e.retryable,
+        )
 
     except Exception as e:
-        print(f"Pipeline error for session {session_id}: {e}")
+        print(f"[FINALIZE] Pipeline unexpected error for session {session_id}: {e}")
         metrics_logger.finalize_metrics(session_id, status="failed")
-        set_status(session_id, "failed")
+        set_session_status(
+            session_id=session_id,
+            status="failed",
+            stage="pipeline",
+            provider=None,
+            error_code="UNEXPECTED_ERROR",
+            message=f"Pipeline processing failed: {str(e)}",
+            retryable=False,
+        )
 
 
 # ── Retry failed chunks ────────────────────────────────────────
 async def _retry_failed_chunks(session_id: str, failed_indexes: list):
     """
-    Re-processes only the chunks that failed during the meeting.
-    Runs them sequentially to avoid hammering the STT API.
+    Attempts to re-process failed audio chunks using stored audio bytes.
     """
-    session = get_session(session_id)
+    from routers.chunks import process_chunk
 
     for chunk_index in sorted(failed_indexes):
-        print(f"Retrying chunk {chunk_index}...")
-        try:
-            # We don't have the original audio bytes anymore
-            # so we mark them as skipped with empty content
-            # In production you'd store audio bytes in session too
-            save_chunk(session_id, chunk_index, {
-                "chunk_index": chunk_index,
-                "raw":         "[chunk unavailable — retry failed]",
-                "clean":       "[chunk unavailable]",
-                "summary":     "[this segment could not be recovered]",
-                "words":       [],
-                "status":      "ok",  # mark ok so pipeline continues
-            })
-        except Exception as e:
-            print(f"Retry failed for chunk {chunk_index}: {e}")
+        print(f"[FINALIZE] Retrying chunk {chunk_index} for session {session_id}...")
+        audio_bytes = get_audio_chunk(session_id, chunk_index)
+        if audio_bytes:
+            await process_chunk(session_id, chunk_index, audio_bytes)
+        else:
+            print(f"[FINALIZE] Raw audio bytes unavailable for chunk {chunk_index}")
 
 
 # ── MAP-REDUCE: group chunk summaries into block summaries ─────
@@ -193,29 +256,24 @@ async def _aggregate_blocks(session_id: str, chunks: list) -> list:
     """
     Groups every CHUNK_GROUP_SIZE chunk summaries into one
     block summary using LLMClient.
-
-    Example: 40 chunks / 5 per group = 8 block summaries
     """
-    # Collect all chunk summaries in order
     chunk_summaries = [
         c.get("summary", "") for c in chunks
-        if c.get("status") == "ok" and c.get("summary")
+        if c.get("status") in ("STT_COMPLETED", "ok") and c.get("summary")
     ]
 
     if not chunk_summaries:
         return ["No meeting content could be extracted."]
 
-    # Split into groups of CHUNK_GROUP_SIZE
     groups = [
         chunk_summaries[i : i + CHUNK_GROUP_SIZE]
         for i in range(0, len(chunk_summaries), CHUNK_GROUP_SIZE)
     ]
 
-    # Aggregate each group into one block summary
     block_summaries = []
     total_blocks = len(groups)
     for i, group in enumerate(groups):
-        print(f"Aggregating block {i+1}/{total_blocks}...")
+        print(f"[FINALIZE] Aggregating block {i+1}/{total_blocks}...")
         block_summary = await aggregate_block(group, i, session_id=session_id)
         block_summaries.append(block_summary)
 
