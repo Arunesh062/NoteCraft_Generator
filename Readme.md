@@ -146,7 +146,7 @@ NoteCraft_Generator/
 | **Database & Auth** | Firebase Auth, Firestore | User authentication and cloud note history |
 | **Hosting** | Render | Managed Cloud Backend Web Service |
 | **STT Engine** | External HTTPS API (Groq / Whisper) | Speech-to-Text audio transcription |
-| **LLM Engine** | External HTTPS API (Llama 3.1 8B / HF) | Intelligence summarization and note generation |
+| **LLM Engine** | External HTTPS API (Groq Chat Completions / Llama Instruct) | Intelligence summarization and note generation |
 | **Document Export** | `python-docx` | Formatted DOCX Word document synthesis |
 
 ---
@@ -226,10 +226,10 @@ STT_API_KEY=your_stt_provider_api_key
 STT_MODEL=whisper-large-v3-turbo
 STT_TIMEOUT=120
 
-LLM_PROVIDER=huggingface
-LLM_API_URL=https://router.huggingface.co/v1/chat/completions
-LLM_API_KEY=your_llm_provider_api_key
-LLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
+LLM_PROVIDER=groq
+LLM_API_URL=https://api.groq.com/openai/v1/chat/completions
+LLM_API_KEY=your_groq_api_key
+LLM_MODEL=allam-2-7b
 LLM_TIMEOUT=300
 ```
 

@@ -15,7 +15,7 @@ from services.llm_client import (
 )
 
 
-class TestHuggingFaceLLMClient(unittest.TestCase):
+class TestGroqLLMClient(unittest.TestCase):
     @patch("httpx.AsyncClient.post")
     def test_01_successful_generation(self, mock_post):
         """1. Successful generation"""
@@ -151,6 +151,22 @@ class TestHuggingFaceLLMClient(unittest.TestCase):
         draft = {"session_title": "Draft Title"}
         with self.assertRaises(LLMError):
             asyncio.run(refine_notes(draft, session_id="test_session"))
+
+    def test_10_live_groq_llm_request(self):
+        """10. Real Groq Chat Completions API request verification"""
+        from services.llm_client import LLM_API_KEY
+        if not LLM_API_KEY:
+            self.skipTest("LLM_API_KEY not set")
+
+        res = asyncio.run(_call_llm(
+            system_prompt="You are a helpful assistant.",
+            user_prompt="Say 'Groq LLM Verified' and nothing else.",
+            max_tokens=20,
+            session_id="test_live_groq"
+        ))
+        self.assertIsNotNone(res)
+        self.assertGreater(len(res), 0)
+        print(f"[TEST LIVE GROQ LLM] Response: {res}")
 
 
 if __name__ == "__main__":

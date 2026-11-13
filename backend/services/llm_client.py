@@ -10,10 +10,10 @@ from services.retry import execute_with_retry, LLMError, ProviderError
 
 load_dotenv()
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "huggingface").lower()
-LLM_API_URL  = (os.getenv("LLM_API_URL") or os.getenv("LLM_URL") or "https://router.huggingface.co/v1/chat/completions").strip()
-LLM_API_KEY  = (os.getenv("LLM_API_KEY") or os.getenv("HF_TOKEN") or "").strip()
-MODEL        = os.getenv("LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct").strip()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").lower()
+LLM_API_URL  = (os.getenv("LLM_API_URL") or os.getenv("LLM_URL") or "https://api.groq.com/openai/v1/chat/completions").strip()
+LLM_API_KEY  = (os.getenv("LLM_API_KEY") or os.getenv("GROQ_API_KEY") or os.getenv("HF_TOKEN") or "").strip()
+MODEL        = os.getenv("LLM_MODEL", "allam-2-7b").strip()
 LLM_TIMEOUT  = float(os.getenv("LLM_TIMEOUT", "300.0"))
 
 
@@ -26,7 +26,7 @@ async def _call_llm(
     operation: str = "llm_completion",
 ) -> str:
     """
-    Calls external LLM (Hugging Face / OpenAI) with retry and error handling.
+    Calls external LLM (Groq / OpenAI) with retry and error handling.
     """
     if not LLM_API_KEY:
         raise LLMError(
@@ -159,7 +159,7 @@ async def _call_llm(
 
     return await execute_with_retry(
         func=_single_llm_call,
-        provider="huggingface",
+        provider="groq",
         operation=operation,
         session_id=session_id,
         max_attempts=3,

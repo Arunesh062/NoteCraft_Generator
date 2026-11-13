@@ -129,7 +129,7 @@ class TestEndToEndPipeline(unittest.TestCase):
             error_code="LLM_CREDITS_EXHAUSTED",
             status_code=402,
             retryable=False,
-            provider="huggingface",
+            provider="groq",
             operation="block_summary"
         )
 
@@ -160,7 +160,7 @@ class TestEndToEndPipeline(unittest.TestCase):
             error_code="REFINEMENT_FAILED",
             status_code=500,
             retryable=True,
-            provider="huggingface",
+            provider="groq",
             operation="final_refinement"
         )
 
@@ -187,7 +187,7 @@ class TestEndToEndPipeline(unittest.TestCase):
             error_code="INVALID_LLM_RESPONSE",
             status_code=200,
             retryable=False,
-            provider="huggingface",
+            provider="groq",
             operation="final_generation"
         )
 
@@ -197,6 +197,34 @@ class TestEndToEndPipeline(unittest.TestCase):
         self.assertEqual(session["status"], "failed")
         self.assertIsNone(session["docx_url"])
         mock_export.assert_not_called()
+
+    def test_scenario_H_live_e2e_groq_pipeline(self):
+        """Scenario H: Live end-to-end pipeline execution with real Groq LLM API"""
+        from services.llm_client import LLM_API_KEY
+        if not LLM_API_KEY:
+            self.skipTest("LLM_API_KEY not set")
+
+        session_id = "test_live_groq_e2e"
+        delete_session(session_id)
+        create_session(session_id, ["Alice Smith", "Bob Jones"], [], mode="mom")
+
+        save_chunk(session_id, 0, {
+            "chunk_index": 0,
+            "raw": "Hello team, today we discuss the NoteCraft Groq integration.",
+            "clean": "Hello team, today we discuss the NoteCraft Groq integration.",
+            "summary": "Discussed NoteCraft Groq integration progress.",
+            "words": [{"word": "Hello", "start": 0, "end": 0.5}],
+            "status": "STT_COMPLETED"
+        })
+
+        asyncio.run(run_pipeline(session_id))
+
+        session = get_session(session_id)
+        print(f"[LIVE E2E TEST] Session status: {session.get('status')}, stage: {session.get('stage')}")
+        self.assertIn(session.get("status"), ("ready", "ready_with_warnings"))
+        self.assertIsNotNone(session.get("mom_json"))
+        self.assertIsNotNone(session.get("docx_url"))
+        delete_session(session_id)
 
 
 if __name__ == "__main__":

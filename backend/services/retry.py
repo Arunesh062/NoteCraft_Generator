@@ -49,7 +49,7 @@ class STTError(ProviderError):
 class LLMError(ProviderError):
     def __init__(self, message: str, **kwargs):
         operation = kwargs.pop("operation", "llm_completion")
-        provider = kwargs.pop("provider", "huggingface")
+        provider = kwargs.pop("provider", "groq")
         super().__init__(message, provider=provider, operation=operation, **kwargs)
 
 

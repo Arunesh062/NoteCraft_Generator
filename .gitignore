@@ -22,7 +22,10 @@ outputs/
 *.webm
 .DS_Store
 
-# React extension dependencies and build outputs
-extension-react/node_modules/
-extension-react/dist/
+# Node dependencies and build outputs (global & subprojects)
+node_modules/
+dist/
+dist-electron/
+release/
+*.log
 extension-react/vite.config.js.timestamp-*

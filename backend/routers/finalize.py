@@ -128,13 +128,13 @@ async def run_pipeline(session_id: str):
         tagged_transcript = assign_speakers(chunks, speaker_timeline)
 
         # ── Step 3: MAP-REDUCE — group chunks into blocks ──────
-        set_session_status(session_id, status="processing", stage="block_summary", provider="huggingface")
+        set_session_status(session_id, status="processing", stage="block_summary", provider="groq")
         print(f"[FINALIZE] Running MAP-REDUCE aggregation for session {session_id}...")
         block_summaries = await _aggregate_blocks(session_id, chunks)
         save_block_summaries(session_id, block_summaries)
 
         # ── Step 4: Generate final Notes JSON ──────────────────
-        set_session_status(session_id, status="processing", stage="final_generation", provider="huggingface")
+        set_session_status(session_id, status="processing", stage="final_generation", provider="groq")
         print(f"[FINALIZE] Generating final Notes (mode={mode}) for session {session_id}...")
         participants = session.get("participants", [])
         meeting_date = datetime.now().strftime("%Y-%m-%d")
@@ -159,7 +159,7 @@ async def run_pipeline(session_id: str):
         )
 
         # ── Step 5: Refinement pass ────────────────────────────
-        set_session_status(session_id, status="processing", stage="final_refinement", provider="huggingface")
+        set_session_status(session_id, status="processing", stage="final_refinement", provider="groq")
         print(f"[FINALIZE] Refining Notes (mode={mode}) for session {session_id}...")
         
         final_json = notes_json
