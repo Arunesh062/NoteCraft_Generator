@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from routers import chunks, finalize, status
+from services.llm_client import LLM_PROVIDER, MODEL
 
 app = FastAPI(title="NoteCraft AI Backend (CPU Only)", version="3.0.0")
 
@@ -41,8 +42,8 @@ async def root():
     return {
         "status": "NoteCraft AI Backend is running (CPU Only)",
         "stt_provider": os.getenv("STT_PROVIDER", "groq"),
-        "llm_provider": os.getenv("LLM_PROVIDER", "huggingface"),
-        "llm_model": os.getenv("LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
+        "llm_provider": os.getenv("LLM_PROVIDER", LLM_PROVIDER),
+        "llm_model": os.getenv("LLM_MODEL", MODEL),
     }
 
 @app.get("/health")
@@ -59,7 +60,7 @@ async def config_status():
         "status": "ok",
         "stt_provider": os.getenv("STT_PROVIDER", "groq"),
         "stt_configured": bool(stt_url),
-        "llm_provider": os.getenv("LLM_PROVIDER", "huggingface"),
+        "llm_provider": os.getenv("LLM_PROVIDER", LLM_PROVIDER),
         "llm_configured": bool(llm_url),
-        "llm_model": os.getenv("LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
+        "llm_model": os.getenv("LLM_MODEL", MODEL),
     }

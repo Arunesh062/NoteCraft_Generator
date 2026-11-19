@@ -12,8 +12,15 @@ load_dotenv()
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").lower()
 LLM_API_URL  = (os.getenv("LLM_API_URL") or os.getenv("LLM_URL") or "https://api.groq.com/openai/v1/chat/completions").strip()
-LLM_API_KEY  = (os.getenv("LLM_API_KEY") or os.getenv("GROQ_API_KEY") or os.getenv("HF_TOKEN") or "").strip()
-MODEL        = os.getenv("LLM_MODEL", "allam-2-7b").strip()
+LLM_API_KEY  = (
+    os.getenv("LLM_API_KEY")
+    or os.getenv("GROQ_API_KEY")
+    or (os.getenv("STT_API_KEY") if os.getenv("STT_PROVIDER", "groq").lower() == "groq" else "")
+    or os.getenv("HF_TOKEN")
+    or ""
+).strip()
+DEFAULT_MODEL = "openai/gpt-oss-20b"
+MODEL        = (os.getenv("LLM_MODEL") or DEFAULT_MODEL).strip()
 LLM_TIMEOUT  = float(os.getenv("LLM_TIMEOUT", "300.0"))
 
 
